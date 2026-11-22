@@ -1,0 +1,22 @@
+[package]
+name = "gpui-kit-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Throwaway spike: gpui-kit dock + PL/SQL-highlighted editor + 10k-row table on Windows"
+
+[[bin]]
+name = "highlight-check"
+path = "src/bin/highlight_check.rs"
+
+[[bin]]
+name = "spike"
+path = "src/bin/spike.rs"
+
+[dependencies]
+gpui-kit = { version = "0.10.0", features = ["tree-sitter"] }
+tree-sitter = "0.26.13"
+tree-sitter-highlight = "0.26"
+
+[build-dependencies]
+cc = "1.0"

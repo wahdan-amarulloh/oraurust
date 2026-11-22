@@ -1,0 +1,7 @@
+[package]
+name = "oraurust-core"
+version = "0.1.0"
+edition = "2024"
+description = "UI-free logic core for oraurust: Script splitting and the Connection seam"
+
+[dependencies]

@@ -27,7 +27,10 @@ src/plsql.rs        grammar + query wiring into gpui-kit's LanguageRegistry
 
 From the repo root (workspace root): `cargo run` to launch the app, `cargo build` to build without running. The workspace has one binary, `oraurust`; the run command opens the native window. Closing the window exits the process cleanly.
 
-`cargo test` (also from the repo root) currently reports **0 tests** — there are no tests yet. Ticket #3 is UI-only; the tested seams (`ScriptSplitter`, `Connection`, `DataGridMutator`) arrive in later tickets.
+`cargo test` (also from the repo root) runs the logic core's tests from
+`crates/core`: the `ScriptSplitter` and `Connection` seam with its mock
+(issue #4). The app crate itself has no tests — its UI views are not unit
+tested; the tested seams live in `crates/core`.
 
 ## Vendored grammar
 

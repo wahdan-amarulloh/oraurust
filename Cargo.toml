@@ -1,5 +1,5 @@
 [workspace]
 resolver = "3"
-members = ["crates/oraurust"]
+members = ["crates/oraurust", "crates/core"]
 # The gpui-kit spike is throwaway code (issue #2); excluded from the workspace.
 exclude = ["spikes/gpui-kit-spike"]

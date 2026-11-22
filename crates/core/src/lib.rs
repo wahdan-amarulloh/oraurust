@@ -7,10 +7,11 @@
 //!   implementation for tests.
 
 pub mod connection;
+pub mod instant_client;
 pub mod script;
 
 pub use connection::{
-    Catalog, Column, Connection, DbError, MockConnection, Object, ObjectKind, Result, ResultSet,
-    StatementOutcome,
+    Catalog, Column, Connection, DbError, MockConnection, Object, ObjectKind, Profile,
+    ProfileStore, Result, ResultSet, StatementOutcome,
 };
 pub use script::{Statement, split};

@@ -4,6 +4,8 @@
 //! the center, left sidebar for the future Schema Browser, bottom panel for
 //! the future Result Grid). No database functionality yet.
 
+mod connection_panel;
+mod oracle_conn;
 mod plsql;
 mod workspace;
 

@@ -6,8 +6,12 @@
 //! of the app be built and tested without a database.
 
 mod mock;
+mod profile;
+mod store;
 
 pub use mock::MockConnection;
+pub use profile::Profile;
+pub use store::ProfileStore;
 
 /// The app ↔ database boundary. All Oracle-specific code lives behind it.
 pub trait Connection {

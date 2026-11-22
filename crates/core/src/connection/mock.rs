@@ -4,10 +4,10 @@ use super::*;
 
 /// A [`Connection`] that returns scripted outcomes.
 ///
-/// Outcomes are matched in this order for every `execute` call:
-/// 1. a scripted [`DbError`] whose statement text matches,
-/// 2. a scripted [`StatementOutcome::Rows`] whose statement text matches,
-/// 3. otherwise the fallback outcome (default: `RowCount(1)`).
+/// Outcomes are matched for every `execute` call: the first scripted entry
+/// (in insertion order) whose statement text equals the statement wins; if
+/// none, a scripted wildcard (empty statement text) applies; otherwise the
+/// fallback outcome (default: `RowCount(1)`).
 ///
 /// DDL/source/schema lookups are keyed by `Object` and default to an
 /// [`DbError`] `ORA-04043`-style "not found" when unscripted.

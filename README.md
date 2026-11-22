@@ -21,7 +21,7 @@ All commands are run from the repo root, where the workspace lives. The workspac
 
 - `cargo run` — builds and launches the app. This opens the native window.
 - `cargo build` — builds the workspace without running anything.
-- `cargo test` — runs the workspace tests. There are currently **no tests**: the crate compiles and `cargo test` reports 0 tests. Ticket #3 is UI-only, and the tested seams (`ScriptSplitter`, `Connection`, `DataGridMutator`) arrive in later tickets.
+- `cargo test` — runs the workspace tests. The logic core `crates/core/` (issue #4) carries the tested seams `ScriptSplitter` and `Connection` (mocked); `cargo test -p oraurust-core` runs them alone. `DataGridMutator` arrives in a later ticket.
 
 Closing the window exits the process cleanly.
 

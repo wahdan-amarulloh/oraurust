@@ -19,7 +19,7 @@ The logic behind the app, proven entirely by tests with no UI and no database:
   `ORA-` errors).
 
 Per ADR-0001, the real `Connection` will be the `oracle` crate (ODPI-C) on a
-background thread; that wiring arrives with ticket #5.
+background thread; that wiring arrives with ticket 04 (see issue #1).
 
 ## Layout
 

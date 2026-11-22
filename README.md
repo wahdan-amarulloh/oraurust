@@ -1,6 +1,6 @@
 # oraurust
 
-Work toward an Oracle SQL/PL-SQL client built in Rust (see GitHub issue #1 for the spec). Domain vocabulary is defined in [`GLOSSARY.md`](GLOSSARY.md); architecture decisions in `docs/adr/`.
+Work toward an Oracle SQL/PL/SQL client built in Rust (see GitHub issue #1 for the spec). Domain vocabulary is defined in [`GLOSSARY.md`](GLOSSARY.md); architecture decisions in `docs/adr/`.
 
 ## Contents
 

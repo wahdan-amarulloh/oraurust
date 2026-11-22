@@ -11,7 +11,7 @@ use gpui_kit::component::table::{Column, DataTable, TableDelegate, TableState};
 use gpui_kit::component::{ActiveTheme as _, h_flex, v_flex};
 use gpui_kit::*;
 
-actions!(spike, [Quit, ResetLayout]);
+actions!(spike, [Quit]);
 
 // ---------------------------------------------------------------------------
 // Panels
@@ -326,6 +326,7 @@ fn main() {
     app.run(move |cx| {
         gpui_kit::init(cx);
         cx.activate(true);
+        println!("spike window opening");
 
         cx.bind_keys(vec![]);
         cx.on_action(|_: &Quit, cx: &mut App| cx.quit());

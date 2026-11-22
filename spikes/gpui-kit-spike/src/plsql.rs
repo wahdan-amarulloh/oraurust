@@ -2,9 +2,9 @@
 //! `LanguageRegistry` and the tree-sitter highlight API.
 //!
 //! Grammar: `njank/tree-sitter-plsql` (MIT), the same grammar the
-//! developer's `zed-oracle-ext` pins. Highlighting queries are the
-//! extension's `highlights.scm`, adapted only in the header capture
-//! (`@keyword` — gpui-component's registry has no `@header` name).
+//! developer's `zed-oracle-ext` pins. `grammar/highlights.scm` is a copy of
+//! the extension's highlights query; it uses only capture names that
+//! gpui-component's registry understands, so no remapping is needed.
 
 use tree_sitter::Language;
 

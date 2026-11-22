@@ -112,8 +112,8 @@ fn main() {
         println!("  {name}: {count}");
     }
 
-    // 5. A quick sanity check: the `SELECT` keyword and the string literal
-    //    must both have been captured.
+    // 5. Sanity check: every capture class visible highlighting depends on
+    //    must have fired at least once on the sample.
     for expected in ["keyword", "string", "comment", "number", "type"] {
         assert!(
             counts.contains_key(expected),

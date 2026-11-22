@@ -21,7 +21,7 @@ The PL/SQL grammar is [`njank/tree-sitter-plsql`](https://github.com/njank/tree-
 - The grammar's own Rust binding pins `tree-sitter ~0.25.9` and its build script has the external scanner commented out, so it cannot be used as a normal dependency.
 - Vendoring lets us compile the parser verbatim against the runtime the editor uses (the ABI 15 parser is accepted by tree-sitter 0.26.13).
 
-Highlighting queries in `grammar/highlights.scm` come from the same author's `zed-oracle-ext`, with the `@header` capture mapped to `@keyword` since gpui-component's registry has no `@header` name.
+Highlighting queries in `grammar/highlights.scm` come from the same author's `zed-oracle-ext`; they use only capture names gpui-component's registry understands, so no remapping is needed. The query is checked at startup by compiling it against the grammar (a broken query would otherwise fail silently).
 
 ## Project structure
 

@@ -9,6 +9,7 @@ use gpui_kit::component::input::{Editor, EditorState, TabSize};
 use gpui_kit::component::{ActiveTheme as _, v_flex};
 use gpui_kit::*;
 
+use crate::connection_panel::ConnectionPanel;
 use crate::plsql;
 
 const SAMPLE_PLSQL: &str = r#"-- oraurust sample (ticket #03 app shell)
@@ -195,6 +196,10 @@ impl Workspace {
             })),
             cx,
         );
+        let right = DockLayout::tabs().panel_view(
+            panel_handle(cx.new(|cx| ConnectionPanel::new(window, cx))),
+            cx,
+        );
         let bottom = DockLayout::tabs().panel_view(
             panel_handle(cx.new(|cx| {
                 PlaceholderPanel::new(
@@ -212,6 +217,9 @@ impl Workspace {
             view.set_dock(DockPlacement::Left, left, window, cx);
             view.set_dock_size(DockPlacement::Left, px(220.), window, cx);
             view.set_dock_collapsible(DockPlacement::Left, true, window, cx);
+            view.set_dock(DockPlacement::Right, right, window, cx);
+            view.set_dock_size(DockPlacement::Right, px(280.), window, cx);
+            view.set_dock_collapsible(DockPlacement::Right, true, window, cx);
             view.set_dock(DockPlacement::Bottom, bottom, window, cx);
             view.set_dock_size(DockPlacement::Bottom, px(220.), window, cx);
             view.set_dock_collapsible(DockPlacement::Bottom, true, window, cx);

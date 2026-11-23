@@ -141,7 +141,8 @@ impl QueryRunner {
 
         cx.spawn(async move |this, cx| {
             let page = worker.fetch_more().await;
-            this.update(cx, |this, cx| this.append(result, page, cx)).ok();
+            this.update(cx, |this, cx| this.append(result, page, cx))
+                .ok();
         })
         .detach();
     }
@@ -246,16 +247,14 @@ impl QueryRunner {
                 // rows already fetched instead of wiping the grid. The break
                 // may have aborted the statement, so its cursor is gone and
                 // "fetch more" stops being offered.
-                if cancelled {
-                    if let RunStatus::Rows { result, capped, .. } = &self.status {
-                        let kept = RunStatus::Rows {
-                            result: result.clone(),
-                            more: false,
-                            capped: *capped,
-                        };
-                        self.set_status(kept, cx);
-                        return;
-                    }
+                if cancelled && let RunStatus::Rows { result, capped, .. } = &self.status {
+                    let kept = RunStatus::Rows {
+                        result: result.clone(),
+                        more: false,
+                        capped: *capped,
+                    };
+                    self.set_status(kept, cx);
+                    return;
                 }
                 self.set_status(
                     RunStatus::Failed {

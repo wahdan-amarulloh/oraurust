@@ -50,7 +50,8 @@ impl Scripted {
                         more,
                     },
                     cursor,
-                })            }
+                })
+            }
         }
     }
 }
@@ -148,10 +149,8 @@ impl MockConnection {
         columns: Vec<Column>,
         pages: Vec<Vec<Vec<Option<String>>>>,
     ) -> Self {
-        self.scripted.push((
-            statement.to_string(),
-            Scripted::Rows { columns, pages },
-        ));
+        self.scripted
+            .push((statement.to_string(), Scripted::Rows { columns, pages }));
         self
     }
 

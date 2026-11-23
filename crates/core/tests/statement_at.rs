@@ -46,7 +46,10 @@ fn cursor_on_a_blank_line_picks_the_nearest_statement() {
 fn cursor_on_a_plsql_blocks_terminator_picks_the_block() {
     let script = "begin\n  null;\nend;\n/\n";
     let slash = script.find('/').unwrap();
-    assert_eq!(statement_at(script, slash).unwrap().text, "begin\n  null;\nend;");
+    assert_eq!(
+        statement_at(script, slash).unwrap().text,
+        "begin\n  null;\nend;"
+    );
 }
 
 #[test]

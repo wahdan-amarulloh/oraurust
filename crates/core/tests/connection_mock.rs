@@ -1,6 +1,6 @@
 use oraurust_core::{
-    Catalog, CancelHandle, Column, Connection, DbError, MockCancel, MockConnection, Object,
-    ObjectKind, StatementOutcome, FETCH_ROWS, ROW_CAP,
+    CancelHandle, Catalog, Column, Connection, DbError, FETCH_ROWS, MockCancel, MockConnection,
+    Object, ObjectKind, ROW_CAP, StatementOutcome,
 };
 
 fn id_column() -> Column {
@@ -36,7 +36,11 @@ fn dml_returns_row_count_and_surfaces_ora_errors() {
         .execute("update t set x = 'bad")
         .expect_err("scripted error");
     assert_eq!(err.code, "ORA-01756");
-    assert_eq!(err.position, Some(19), "error position must survive the seam");
+    assert_eq!(
+        err.position,
+        Some(19),
+        "error position must survive the seam"
+    );
 
     let err = conn
         .execute("select * from missing")
@@ -53,10 +57,8 @@ fn dml_returns_row_count_and_surfaces_ora_errors() {
 
 #[test]
 fn select_returns_columns_and_rows() {
-    let conn = MockConnection::new().with_select(
-        vec![id_column()],
-        vec![vec![Some("1".into()), None]],
-    );
+    let conn =
+        MockConnection::new().with_select(vec![id_column()], vec![vec![Some("1".into()), None]]);
 
     match conn.execute("select id from t").expect("rows") {
         StatementOutcome::Rows { page, cursor } => {
@@ -85,17 +87,11 @@ fn keyed_select_wins_over_the_wildcard_select() {
             vec![vec![Some("keyed".into())]],
         );
 
-    match conn
-        .execute("select specific from t")
-        .expect("keyed")
-    {
+    match conn.execute("select specific from t").expect("keyed") {
         StatementOutcome::Rows { page, .. } => assert_eq!(page.rows[0][0], Some("keyed".into())),
         other => panic!("expected Rows, got {other:?}"),
     }
-    match conn
-        .execute("select other from t")
-        .expect("wildcard")
-    {
+    match conn.execute("select other from t").expect("wildcard") {
         StatementOutcome::Rows { page, .. } => assert_eq!(page.rows[0][0], Some("wildcard".into())),
         other => panic!("expected Rows, got {other:?}"),
     }

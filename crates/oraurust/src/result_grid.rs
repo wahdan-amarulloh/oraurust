@@ -14,7 +14,7 @@ use gpui_kit::component::table::{Column as TableColumn, DataTable, TableDelegate
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use oraurust_core::{ResultSet, ROW_CAP};
+use oraurust_core::{ROW_CAP, ResultSet};
 
 use crate::runner::{QueryRunner, RunStatus};
 
@@ -39,8 +39,11 @@ impl ResultGridDelegate {
             .map(|(ix, column)| {
                 // The type rides along in the header, as ticket #6 asks for
                 // "column names + types".
-                TableColumn::new(ix.to_string(), format!("{} : {}", column.name, column.type_name))
-                    .width(px(DEFAULT_COLUMN_WIDTH))
+                TableColumn::new(
+                    ix.to_string(),
+                    format!("{} : {}", column.name, column.type_name),
+                )
+                .width(px(DEFAULT_COLUMN_WIDTH))
             })
             .collect();
         Self { columns, result }
@@ -123,12 +126,7 @@ impl ResultGridPanel {
 
     /// Rebuilds the table when the runner's result changed, so it is not
     /// recreated on unrelated redraws.
-    fn sync_table(
-        &mut self,
-        generation: u64,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn sync_table(&mut self, generation: u64, window: &mut Window, cx: &mut Context<Self>) {
         if generation == self.table_generation {
             return;
         }

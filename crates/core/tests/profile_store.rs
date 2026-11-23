@@ -47,7 +47,11 @@ fn save_with_existing_name_edits_in_place() {
     store.save(&edited).expect("edit");
 
     let loaded = store.load().expect("load");
-    assert_eq!(loaded, vec![edited], "editing must not duplicate the profile");
+    assert_eq!(
+        loaded,
+        vec![edited],
+        "editing must not duplicate the profile"
+    );
 }
 
 #[test]

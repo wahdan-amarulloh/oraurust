@@ -53,7 +53,11 @@ fn new_strips_rust_oracles_oci_error_prefix() {
 
 #[test]
 fn new_keeps_a_message_that_does_not_repeat_the_code() {
-    let error = DbError::new("DPI-1047", "Cannot locate a 64-bit Oracle Client library", None);
+    let error = DbError::new(
+        "DPI-1047",
+        "Cannot locate a 64-bit Oracle Client library",
+        None,
+    );
     assert_eq!(
         error.to_string(),
         "DPI-1047: Cannot locate a 64-bit Oracle Client library"

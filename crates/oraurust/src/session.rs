@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use gpui_kit::*;
 use oraurust_core::{
-    CancelHandle, Connection, Cursor, DbError, Page, Result, StatementOutcome, FETCH_ROWS,
+    CancelHandle, Connection, Cursor, DbError, FETCH_ROWS, Page, Result, StatementOutcome,
 };
 
 use crate::oracle_conn::OraConnection;
@@ -27,7 +27,10 @@ pub enum SessionState {
     #[default]
     Disconnected,
     Connecting(String),
-    Connected { profile: String, detail: String },
+    Connected {
+        profile: String,
+        detail: String,
+    },
     Failed(String),
 }
 

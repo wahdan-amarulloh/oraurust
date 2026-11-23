@@ -42,14 +42,19 @@ fn main() {
             .primary_display()
             .map(|d| {
                 let s = d.bounds().size;
-                size((s.width * 0.85).min(px(1500.)), (s.height * 0.85).min(px(1000.)))
+                size(
+                    (s.width * 0.85).min(px(1500.)),
+                    (s.height * 0.85).min(px(1000.)),
+                )
             })
             .unwrap_or(size(px(1280.), px(800.)));
 
         let _ = open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                    None, window_size, cx,
+                    None,
+                    window_size,
+                    cx,
                 ))),
                 titlebar: Some(TitlebarOptions {
                     title: Some("oraurust".into()),

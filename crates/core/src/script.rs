@@ -170,7 +170,13 @@ pub fn split(script: &str) -> Vec<Statement> {
 /// Scans the first tokens of the chunk, skipping whitespace and comments.
 fn is_plsql_block(chunk: &str) -> bool {
     const STORED_KEYWORDS: [&str; 7] = [
-        "procedure", "function", "package", "trigger", "type", "library", "java",
+        "procedure",
+        "function",
+        "package",
+        "trigger",
+        "type",
+        "library",
+        "java",
     ];
 
     // Lowercased bare words in `text` — Oracle keywords are case-insensitive.
@@ -181,7 +187,9 @@ fn is_plsql_block(chunk: &str) -> bool {
         Some("create") => {
             // `create [or replace] [editionable|noneditionable] <unit>`
             for word in words {
-                if word == "or" || word == "replace" || word == "editionable"
+                if word == "or"
+                    || word == "replace"
+                    || word == "editionable"
                     || word == "noneditionable"
                 {
                     continue;

@@ -125,11 +125,7 @@ struct EditorPanel {
 }
 
 impl EditorPanel {
-    fn new(
-        runner: Entity<QueryRunner>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    fn new(runner: Entity<QueryRunner>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let editor = cx.new(|cx| {
             EditorState::new(window, cx)
                 .language(plsql::LANG_NAME)

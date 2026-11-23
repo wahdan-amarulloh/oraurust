@@ -5,8 +5,8 @@
 use std::sync::Arc;
 
 use oraurust_core::{
-    CancelHandle, Catalog, Column, Connection, Cursor, DbError, Object, ObjectKind, Page, Profile,
-    Result, StatementOutcome, FETCH_ARRAY_SIZE, FETCH_ROWS, ROW_CAP,
+    CancelHandle, Catalog, Column, Connection, Cursor, DbError, FETCH_ARRAY_SIZE, FETCH_ROWS,
+    Object, ObjectKind, Page, Profile, ROW_CAP, Result, StatementOutcome,
 };
 
 /// A live Oracle session behind the [`Connection`] seam.
@@ -61,7 +61,9 @@ impl CancelHandle for OraCancel {
         // `break_execution` is an OCI call: the caller runs it off the UI
         // thread. The server raises ORA-01013 on the interrupted fetch, which
         // surfaces as the run's error.
-        self.session.break_execution().map_err(|e| map_error(e, None))
+        self.session
+            .break_execution()
+            .map_err(|e| map_error(e, None))
     }
 }
 
@@ -124,8 +126,7 @@ impl Connection for OraConnection {
                 .map_err(|e| map_error(e, None))?;
             let columns = columns_of(&result);
             let mut pending = None;
-            let (rows, more) =
-                read_rows(&mut result, columns.len(), FETCH_ROWS, &mut pending)?;
+            let (rows, more) = read_rows(&mut result, columns.len(), FETCH_ROWS, &mut pending)?;
             let fetched = rows.len();
             let cursor = more.then(|| {
                 Box::new(OraCursor {
@@ -165,7 +166,11 @@ impl Connection for OraConnection {
                      'TABLE','VIEW','PACKAGE','PACKAGE BODY','PROCEDURE',\
                      'FUNCTION','TRIGGER','SEQUENCE','SYNONYM','INDEX') \
                    ORDER BY object_type, object_name";
-        for row in self.session.query(sql, &[]).map_err(|e| map_error(e, None))? {
+        for row in self
+            .session
+            .query(sql, &[])
+            .map_err(|e| map_error(e, None))?
+        {
             let row = row.map_err(|e| map_error(e, None))?;
             // 0-based: column 0 is object_name, column 1 object_type.
             let name: String = row.get(0).map_err(|e| map_error(e, None))?;
@@ -312,7 +317,10 @@ fn read_rows(
 
 fn read_row(row: &oracle::Row, columns: usize) -> Result<Vec<Option<String>>> {
     (0..columns)
-        .map(|ix| row.get::<usize, Option<String>>(ix).map_err(|e| map_error(e, None)))
+        .map(|ix| {
+            row.get::<usize, Option<String>>(ix)
+                .map_err(|e| map_error(e, None))
+        })
         .collect()
 }
 
@@ -392,9 +400,14 @@ mod integration {
 
     #[test]
     fn single_column_select_returns_its_one_value() {
-        let Some(conn) = connection() else { return skip() };
+        let Some(conn) = connection() else {
+            return skip();
+        };
 
-        match conn.execute("select 1 from dual").expect("select 1 from dual") {
+        match conn
+            .execute("select 1 from dual")
+            .expect("select 1 from dual")
+        {
             StatementOutcome::Rows { page, .. } => {
                 assert_eq!(page.columns.len(), 1);
                 assert_eq!(page.rows.len(), 1);
@@ -407,7 +420,9 @@ mod integration {
 
     #[test]
     fn multi_column_select_returns_every_value_and_nulls() {
-        let Some(conn) = connection() else { return skip() };
+        let Some(conn) = connection() else {
+            return skip();
+        };
 
         let outcome = conn
             .execute("select 1 as a, 'x' as b, null as c from dual")
@@ -427,7 +442,9 @@ mod integration {
 
     #[test]
     fn describe_schema_reads_both_dictionary_columns() {
-        let Some(conn) = connection() else { return skip() };
+        let Some(conn) = connection() else {
+            return skip();
+        };
 
         let catalog = conn.describe_schema().expect("describe_schema");
         for object in &catalog.objects {
@@ -437,7 +454,9 @@ mod integration {
 
     #[test]
     fn oracle_errors_show_the_code_once_with_position() {
-        let Some(conn) = connection() else { return skip() };
+        let Some(conn) = connection() else {
+            return skip();
+        };
 
         let error = conn
             .execute("select no_such_column from dual")
@@ -456,7 +475,9 @@ mod integration {
 
     #[test]
     fn a_select_larger_than_one_page_needs_the_cursor() {
-        let Some(conn) = connection() else { return skip() };
+        let Some(conn) = connection() else {
+            return skip();
+        };
 
         // CONNECT BY LEVEL generates 1200 rows, past one 500-row page; no
         // table is touched and nothing is committed.
@@ -483,7 +504,9 @@ mod integration {
 
     #[test]
     fn dml_reports_the_affected_row_count() {
-        let Some(conn) = connection() else { return skip() };
+        let Some(conn) = connection() else {
+            return skip();
+        };
 
         // A no-op update inside the session's open transaction; it is never
         // committed, so the database is unchanged.
@@ -493,4 +516,3 @@ mod integration {
         assert_eq!(outcome, StatementOutcome::RowCount(0));
     }
 }
-

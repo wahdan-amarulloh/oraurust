@@ -1,0 +1,14 @@
+#!/bin/sh
+# Pre-commit guardrail: formatting, lints, tests.
+#
+# Catches the mechanical slips a review agent should never have to spend
+# tokens on. Install once per clone:
+#
+#   cp scripts/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+#
+# (or run `scripts/pre-commit` by hand before committing).
+set -e
+
+cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace

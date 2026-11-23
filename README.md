@@ -23,6 +23,9 @@ All commands are run from the repo root, where the workspace lives. The workspac
 - `cargo run` — builds and launches the app. This opens the native window.
 - `cargo build` — builds the workspace without running anything.
 - `cargo test` — runs the workspace tests. The logic core `crates/core/` (issues #4, #6) carries the tested seams `ScriptSplitter`, `statement_at` (statement under the cursor), and `Connection` (mocked, with paged SELECTs and a separate `CancelHandle`); `cargo test -p oraurust-core` runs them alone. `DataGridMutator` arrives in a later ticket.
+- `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings` — the same checks CI runs. Install them as a pre-commit hook with `cp scripts/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit`.
+
+The optional integration tests against a real Oracle database are covered in [`docs/testing/integration-tests.md`](docs/testing/integration-tests.md).
 
 Closing the window exits the process cleanly.
 

@@ -226,7 +226,7 @@ impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let (dock_area, _skin) = DockSkin::dock_area("oraurust-dock", Some(1), window, cx);
         let session = cx.new(|_| Session::default());
-        let runner = cx.new(|_| QueryRunner::new(session.clone()));
+        let runner = cx.new(|cx| QueryRunner::new(session.clone(), cx));
         let center = DockLayout::tabs().panel_view(
             panel_handle(cx.new(|cx| EditorPanel::new(runner.clone(), window, cx))),
             cx,

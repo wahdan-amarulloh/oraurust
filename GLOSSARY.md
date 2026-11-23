@@ -10,13 +10,13 @@ A single executable unit extracted from a Script: either a SQL statement (SELECT
 Running one Statement against a Connection. A SELECT produces a Result Set; DML produces a row count within the session's open Transaction; DDL commits implicitly (Oracle semantics).
 
 ## Transaction
-The Oracle session's implicit transaction. DML stays uncommitted until the user commits or rolls back. The app never auto-commits DML.
+The Oracle session's implicit transaction. DML stays uncommitted until the user commits or rolls back. The app never auto-commits DML. Its state is *clean* (no uncommitted changes) or *dirty* (DML pending); DDL ends it with an implicit commit, and COMMIT/ROLLBACK end it explicitly. The Result Grid shows the state and offers Commit/Rollback.
 
 ## Result Set
 Tabular output of a SELECT: column metadata (name, type) plus rows, displayed in a Result Grid.
 
 ## Result Grid
-Virtualized read-only table view of a Result Set, exportable to CSV.
+Virtualized read-only table view of a Result Set, exportable to CSV. Export writes the fetched rows (at most the row cap) with a header row of column names; a NULL is an empty field.
 
 ## Data Grid
 An editable Result Grid over a single-table SELECT: cell edits generate an `UPDATE ... WHERE ROWID = :rid`, applied only on explicit commit.

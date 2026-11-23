@@ -15,6 +15,7 @@ enum Scripted {
         pages: Vec<Vec<Vec<Option<String>>>>,
     },
     RowCount(u64),
+    Transaction(TransactionEnd),
 }
 
 impl Scripted {
@@ -23,6 +24,7 @@ impl Scripted {
         match self {
             Scripted::Error(error) => Err(error.clone()),
             Scripted::RowCount(count) => Ok(StatementOutcome::RowCount(*count)),
+            Scripted::Transaction(end) => Ok(StatementOutcome::Transaction(*end)),
             Scripted::Rows { columns, pages } => {
                 // Flatten the scripted pages so the cursor applies the same
                 // `ROW_CAP` rule the real one does.
@@ -157,6 +159,14 @@ impl MockConnection {
     /// Scripts the fallback outcome for statements with no scripted match.
     pub fn with_row_count(mut self, count: u64) -> Self {
         self.fallback = Scripted::RowCount(count);
+        self
+    }
+
+    /// Scripts `statement` to end the session's Transaction (issue #7), as
+    /// `COMMIT` / `ROLLBACK` do.
+    pub fn with_transaction_end(mut self, statement: &str, end: TransactionEnd) -> Self {
+        self.scripted
+            .push((statement.to_string(), Scripted::Transaction(end)));
         self
     }
 

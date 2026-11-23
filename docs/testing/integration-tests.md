@@ -53,6 +53,13 @@ rather than silently passing.
 - `describe_schema` reading both dictionary columns.
 - ORA- errors: code shown once, 1-based position preserved.
 - DML affected row count, never committed.
+- **Transactions**: COMMIT/ROLLBACK classified as `StatementOutcome::Transaction`
+  (`commit_and_rollback_are_classified_as_transaction_ends`), TRUNCATE and other
+  implicitly-committing statements reported as `Ddl` not `RowCount`
+  (`statements_outside_the_transaction_are_reported_as_ddl`), and a rollback
+  discarding an uncommitted insert into a session-private global temporary table
+  (`rollback_discards_uncommitted_dml`). Every table the suite creates is dropped
+  afterwards.
 - **Paging**: 1200 rows over three 500-row pages, exact end-of-data, no lost or
   duplicated rows (`a_select_larger_than_one_page_needs_the_cursor`).
 

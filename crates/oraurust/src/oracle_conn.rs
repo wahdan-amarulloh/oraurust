@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use oraurust_core::{
     CancelHandle, Catalog, Column, Connection, Cursor, DbError, FETCH_ARRAY_SIZE, FETCH_ROWS,
-    Object, ObjectKind, Page, Profile, ROW_CAP, Result, StatementOutcome,
+    Object, ObjectKind, Page, Profile, ROW_CAP, Result, StatementOutcome, TransactionEnd,
 };
 
 /// A live Oracle session behind the [`Connection`] seam.
@@ -35,11 +35,16 @@ impl OraConnection {
         profile: &Profile,
         connect_string: impl AsRef<str>,
     ) -> Result<Self> {
-        oracle::Connection::connect(&profile.username, &profile.password, connect_string)
-            .map(|session| Self {
-                session: Arc::new(session),
-            })
-            .map_err(|e| map_error(e, None))
+        let mut session =
+            oracle::Connection::connect(&profile.username, &profile.password, connect_string)
+                .map_err(|e| map_error(e, None))?;
+        // Nothing auto-commits (issue #7). The driver defaults to autocommit
+        // off (`connection.rs:543`), but the whole Transaction UI rests on it,
+        // so it is set explicitly here rather than inherited.
+        session.set_autocommit(false);
+        Ok(Self {
+            session: Arc::new(session),
+        })
     }
 
     /// A handle that breaks the running statement (`break_execution`), over
@@ -116,8 +121,8 @@ impl Connection for OraConnection {
             .build()
             .map_err(|e| map_error(e, None))?;
         // The statement type decides the outcome shape: SELECT → a first page
-        // plus a cursor, DDL → implicit commit, DML → affected row count in
-        // the open transaction.
+        // plus a cursor, DDL → implicit commit, COMMIT/ROLLBACK → the
+        // Transaction ended, DML → affected row count in the open transaction.
         if stmt.is_query() {
             // `into_result_set` takes ownership of the statement, so the
             // cursor can outlive this call on the worker thread.
@@ -148,12 +153,29 @@ impl Connection for OraConnection {
                 cursor,
             })
         } else {
+            // COMMIT/ROLLBACK report no row count, so they are classified
+            // before the generic DML path (issue #7).
+            let transaction_end = match stmt.statement_type() {
+                oracle::StatementType::Commit => Some(TransactionEnd::Commit),
+                oracle::StatementType::Rollback => Some(TransactionEnd::Rollback),
+                _ => None,
+            };
             stmt.execute(&[]).map_err(|e| map_error(e, None))?;
-            if stmt.is_ddl() {
-                Ok(StatementOutcome::Ddl)
-            } else {
+            if let Some(end) = transaction_end {
+                Ok(StatementOutcome::Transaction(end))
+            } else if stmt.is_dml() || stmt.is_plsql() {
+                // Only statements Oracle runs inside the transaction report a
+                // row count; a PL/SQL block reports what its DML affected.
                 let affected = stmt.row_count().map_err(|e| map_error(e, None))?;
                 Ok(StatementOutcome::RowCount(affected))
+            } else {
+                // Everything else is DDL or another statement Oracle runs
+                // outside the transaction: `is_ddl()` covers only CREATE/
+                // ALTER/DROP (statement.rs:1161), so TRUNCATE, GRANT, COMMENT
+                // and ANALYZE — all of which commit implicitly — would
+                // otherwise be misreported as DML of 0 rows, leaving a stale
+                // "uncommitted" in the UI (issue #7).
+                Ok(StatementOutcome::Ddl)
             }
         }
     }
@@ -514,5 +536,82 @@ mod integration {
             .execute("update dual set dummy = dummy where 1 = 0")
             .expect("no-op update");
         assert_eq!(outcome, StatementOutcome::RowCount(0));
+    }
+
+    #[test]
+    fn commit_and_rollback_are_classified_as_transaction_ends() {
+        let Some(conn) = connection() else {
+            return skip();
+        };
+
+        // Both statements execute on an idle transaction, so nothing changes
+        // in the database; only the reported outcome shape is under test.
+        assert_eq!(
+            conn.execute("commit").expect("commit"),
+            StatementOutcome::Transaction(TransactionEnd::Commit)
+        );
+        assert_eq!(
+            conn.execute("rollback").expect("rollback"),
+            StatementOutcome::Transaction(TransactionEnd::Rollback)
+        );
+    }
+
+    #[test]
+    fn statements_outside_the_transaction_are_reported_as_ddl() {
+        let Some(conn) = connection() else {
+            return skip();
+        };
+
+        // TRUNCATE commits implicitly but is not CREATE/ALTER/DROP, so the
+        // crate's `is_ddl()` misses it. Without the explicit DML/PL-SQL check
+        // in `execute`, it would report 0 rows affected and leave a stale
+        // "uncommitted" in the UI (issue #7 review).
+        let _ = conn.execute("drop table oraurust_it_ddl");
+        conn.execute("create table oraurust_it_ddl (n number)")
+            .expect("create the table");
+        assert_eq!(
+            conn.execute("truncate table oraurust_it_ddl")
+                .expect("truncate"),
+            StatementOutcome::Ddl
+        );
+        conn.execute("drop table oraurust_it_ddl")
+            .expect("drop the table");
+    }
+
+    #[test]
+    fn rollback_discards_uncommitted_dml() {
+        let Some(conn) = connection() else {
+            return skip();
+        };
+
+        // A global temporary table keeps the test's data session-private and
+        // transaction-scoped, so a shared development database sees no rows
+        // and nothing survives the rollback.
+        let _ = conn.execute("drop table oraurust_it_txn");
+        conn.execute(
+            "create global temporary table oraurust_it_txn (n number) on commit delete rows",
+        )
+        .expect("create the temp table (DDL commits implicitly)");
+
+        conn.execute("insert into oraurust_it_txn values (1)")
+            .expect("insert");
+        let visible: u64 = conn
+            .session
+            .query_row_as("select count(*) from oraurust_it_txn", &[])
+            .expect("count inside the transaction");
+        assert_eq!(visible, 1, "the insert is visible before rollback");
+
+        assert_eq!(
+            conn.execute("rollback").expect("rollback"),
+            StatementOutcome::Transaction(TransactionEnd::Rollback)
+        );
+        let after: u64 = conn
+            .session
+            .query_row_as("select count(*) from oraurust_it_txn", &[])
+            .expect("count after rollback");
+        assert_eq!(after, 0, "rollback discarded the uncommitted insert");
+
+        conn.execute("drop table oraurust_it_txn")
+            .expect("drop the temp table");
     }
 }

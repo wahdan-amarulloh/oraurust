@@ -1,6 +1,7 @@
-//! The Result Grid (issue #6): a virtualized table over the last SELECT's
-//! Result Set, plus the status line for every execution (row count, DML
-//! affected rows, DDL, or a readable Oracle error).
+//! The Result Grid (issues #6 and #7): a virtualized table over the last
+//! SELECT's Result Set, the status line for every execution (row count, DML
+//! affected rows, DDL, or a readable Oracle error), the session's Transaction
+//! state with Commit/Rollback, and CSV export of the grid.
 //!
 //! The grid renders from `QueryRunner`'s status only; all fetching happened on
 //! the background executor. Stripe rendering makes odd and even records
@@ -10,11 +11,12 @@ use std::sync::Arc;
 
 use gpui_kit::component::button::Button;
 use gpui_kit::component::dock::{BasePanel, Panel, PanelEvent};
+use gpui_kit::component::notification::Notification;
 use gpui_kit::component::table::{Column as TableColumn, DataTable, TableDelegate, TableState};
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use oraurust_core::{ROW_CAP, ResultSet};
+use oraurust_core::{ROW_CAP, ResultSet, TransactionEnd, to_csv};
 
 use crate::runner::{QueryRunner, RunStatus};
 
@@ -105,6 +107,9 @@ pub struct ResultGridPanel {
     _observed_runner: Subscription,
 }
 
+/// File name suggested in the CSV save dialog.
+const CSV_FILE_NAME: &str = "result.csv";
+
 impl ResultGridPanel {
     pub fn new(runner: Entity<QueryRunner>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let observed_runner = cx.observe_in(&runner, window, |this, runner, window, cx| {
@@ -139,6 +144,49 @@ impl ResultGridPanel {
             _ => None,
         };
     }
+
+    /// Prompts for a file and writes the current Result Set to it as CSV
+    /// (issue #7). The write runs on the background executor; the UI thread
+    /// only formats the text, which is bounded by the row cap.
+    fn export_csv(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let RunStatus::Rows { result, .. } = self.runner.read(cx).status() else {
+            window.push_notification(Notification::warning("No result set to export."), cx);
+            return;
+        };
+        let result = result.clone();
+        let initial_directory = std::env::var_os("USERPROFILE")
+            .or_else(|| std::env::var_os("HOME"))
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+
+        cx.spawn_in(window, async move |_this, cx| {
+            let prompt = cx.update(|_window, app| {
+                app.prompt_for_new_path(&initial_directory, Some(CSV_FILE_NAME))
+            });
+            let Ok(prompt) = prompt else {
+                return;
+            };
+            let Ok(Ok(Some(path))) = prompt.await else {
+                // Cancelled, or the platform has no file picker: no export.
+                return;
+            };
+            let csv = to_csv(&result);
+            let target = path.clone();
+            let written = cx
+                .background_spawn(async move { std::fs::write(&target, csv) })
+                .await;
+            cx.update(|window, app| match written {
+                Ok(()) => window.push_notification(
+                    Notification::success(format!("Exported {}", path.display())),
+                    app,
+                ),
+                Err(error) => window
+                    .push_notification(Notification::error(format!("Export failed: {error}")), app),
+            })
+            .ok();
+        })
+        .detach();
+    }
 }
 
 impl EventEmitter<PanelEvent> for ResultGridPanel {}
@@ -150,8 +198,15 @@ impl Focusable for ResultGridPanel {
 
 impl Render for ResultGridPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let status = self.runner.read(cx).status().clone();
-        let busy = self.runner.read(cx).is_busy();
+        let runner = self.runner.read(cx);
+        let status = runner.status().clone();
+        let busy = runner.is_busy();
+        let transaction = runner.transaction();
+        let commit_error = runner.end_error().cloned();
+        // Export only a finished Result Set: while pages are still being
+        // fetched `busy` is set, and exporting now would silently write a
+        // partial grid.
+        let can_export = matches!(&status, RunStatus::Rows { .. }) && !busy;
 
         let (line, color) = match &status {
             RunStatus::Idle => (
@@ -189,6 +244,7 @@ impl Render for ResultGridPanel {
                 cx.theme().success,
             ),
             RunStatus::Ddl => ("Done (implicit commit).".to_string(), cx.theme().success),
+            RunStatus::Transaction(end) => (end.label().to_string(), cx.theme().success),
             RunStatus::Failed {
                 message, cancelled, ..
             } => (
@@ -214,6 +270,22 @@ impl Render for ResultGridPanel {
                 .into_any_element(),
         };
 
+        // Commit/Rollback stay available whenever the session has uncommitted
+        // changes, even while a SELECT's grid is showing (issue #7: they
+        // control the session's transaction, not the last statement's).
+        let can_end_transaction = transaction.is_dirty() && !busy;
+
+        // The Transaction indicator: a failed Commit/Rollback is reported here
+        // instead of clearing the grid, because the transaction is still open.
+        let (transaction_line, transaction_color) = match &commit_error {
+            Some(error) => (
+                format!("Transaction still open: {error}"),
+                cx.theme().danger,
+            ),
+            None if transaction.is_dirty() => (transaction.label().to_string(), cx.theme().warning),
+            None => (transaction.label().to_string(), cx.theme().muted_foreground),
+        };
+
         v_flex()
             .size_full()
             .child(div().flex_1().overflow_hidden().child(body))
@@ -234,11 +306,47 @@ impl Render for ResultGridPanel {
                             })),
                     )
                     .child(
+                        Button::new("commit")
+                            .label("Commit")
+                            .when(!can_end_transaction, |button| button.disabled(true))
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.runner.update(cx, |runner, cx| {
+                                    runner.end_transaction(TransactionEnd::Commit, cx)
+                                });
+                            })),
+                    )
+                    .child(
+                        Button::new("rollback")
+                            .label("Rollback")
+                            .when(!can_end_transaction, |button| button.disabled(true))
+                            .on_click(cx.listener(|this, _, _window, cx| {
+                                this.runner.update(cx, |runner, cx| {
+                                    runner.end_transaction(TransactionEnd::Rollback, cx)
+                                });
+                            })),
+                    )
+                    .child(
+                        Button::new("export-csv")
+                            .label("Export CSV")
+                            .when(!can_export, |button| button.disabled(true))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.export_csv(window, cx);
+                            })),
+                    )
+                    .child(
                         div()
                             .text_xs()
-                            .text_color(color)
                             .overflow_hidden()
-                            .child(line),
+                            .child(line)
+                            .text_color(color),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .text_xs()
+                            .overflow_hidden()
+                            .child(transaction_line)
+                            .text_color(transaction_color),
                     ),
             )
     }

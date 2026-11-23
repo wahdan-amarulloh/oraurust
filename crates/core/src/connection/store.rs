@@ -60,10 +60,10 @@ const FALLBACK_PREFIX: &str = "b64:";
 fn seal_password(password: &str) -> io::Result<String> {
     use std::ptr;
     use std::ptr::null;
+    use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Cryptography::{
         CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData,
     };
-    use windows_sys::Win32::Foundation::LocalFree;
     let plain: Vec<u8> = password
         .encode_utf16()
         .flat_map(|u| u.to_le_bytes())
@@ -97,10 +97,10 @@ fn seal_password(password: &str) -> io::Result<String> {
 #[cfg(windows)]
 fn unseal_password(sealed_b64: &str) -> io::Result<String> {
     use std::ptr;
+    use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Cryptography::{
         CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptUnprotectData,
     };
-    use windows_sys::Win32::Foundation::LocalFree;
 
     let sealed = base64::engine::general_purpose::STANDARD
         .decode(sealed_b64)
@@ -134,8 +134,7 @@ fn unseal_password(sealed_b64: &str) -> io::Result<String> {
         .iter()
         .map(|c| u16::from_le_bytes(*c))
         .collect();
-    String::from_utf16(&units)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    String::from_utf16(&units).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
 #[cfg(not(windows))]
@@ -158,7 +157,9 @@ fn unseal_password(sealed: &str) -> io::Result<String> {
                 .decode(b64)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
         })
-        .and_then(|bytes| String::from_utf8(bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)))
+        .and_then(|bytes| {
+            String::from_utf8(bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        })
 }
 
 /// Named connection profiles, persisted to one JSON file.

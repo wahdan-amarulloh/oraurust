@@ -2,11 +2,15 @@
 //!
 //! Issue #3 — app shell: a GPUI window with a dock layout (editor pane in
 //! the center, left sidebar for the future Schema Browser, bottom panel for
-//! the future Result Grid). No database functionality yet.
+//! the Result Grid). Issue #6 — Ctrl+Enter executes the statement under the
+//! cursor on the background executor and its output lands in the Result Grid.
 
 mod connection_panel;
 mod oracle_conn;
 mod plsql;
+mod result_grid;
+mod runner;
+mod session;
 mod workspace;
 
 use gpui_kit::assets::Assets;
@@ -38,14 +42,19 @@ fn main() {
             .primary_display()
             .map(|d| {
                 let s = d.bounds().size;
-                size((s.width * 0.85).min(px(1500.)), (s.height * 0.85).min(px(1000.)))
+                size(
+                    (s.width * 0.85).min(px(1500.)),
+                    (s.height * 0.85).min(px(1000.)),
+                )
             })
             .unwrap_or(size(px(1280.), px(800.)));
 
         let _ = open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                    None, window_size, cx,
+                    None,
+                    window_size,
+                    cx,
                 ))),
                 titlebar: Some(TitlebarOptions {
                     title: Some("oraurust".into()),

@@ -1,16 +1,23 @@
 //! The app shell workspace: a dock area with the PL/SQL editor pane in the
 //! center, a left sidebar area for the future Schema Browser (issue #8),
-//! and a bottom panel for the future Result Grid (issue #6).
+//! and a bottom panel holding the Result Grid (issue #6).
+//!
+//! Ctrl+Enter in the editor runs the Statement under the cursor through
+//! `QueryRunner` on the background executor (issue #6).
 
 use gpui_kit::component::dock::{
     DockArea, DockLayout, DockPlacement, DockSkin, PanelEvent, panel_handle,
 };
-use gpui_kit::component::input::{Editor, EditorState, TabSize};
+use gpui_kit::component::input::{Editor, EditorState, InputEvent, TabSize};
 use gpui_kit::component::{ActiveTheme as _, v_flex};
 use gpui_kit::*;
+use oraurust_core::statement_at;
 
 use crate::connection_panel::ConnectionPanel;
 use crate::plsql;
+use crate::result_grid::ResultGridPanel;
+use crate::runner::QueryRunner;
+use crate::session::Session;
 
 const SAMPLE_PLSQL: &str = r#"-- oraurust sample (ticket #03 app shell)
 CREATE OR REPLACE PACKAGE BODY emp_pkg AS
@@ -112,11 +119,13 @@ impl gpui_kit::component::dock::Panel for PlaceholderPanel {
 /// The PL/SQL editor pane in the dock center.
 struct EditorPanel {
     editor: Entity<EditorState>,
+    runner: Entity<QueryRunner>,
     focus_handle: FocusHandle,
+    _observed_editor: Subscription,
 }
 
 impl EditorPanel {
-    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(runner: Entity<QueryRunner>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let editor = cx.new(|cx| {
             EditorState::new(window, cx)
                 .language(plsql::LANG_NAME)
@@ -129,10 +138,43 @@ impl EditorPanel {
                 .soft_wrap(false)
                 .default_value(SAMPLE_PLSQL)
         });
+        let observed_editor = cx.subscribe_in(
+            &editor,
+            window,
+            |this, editor, event: &InputEvent, _window, cx| {
+                // Ctrl+Enter arrives as a secondary Enter; the editor never
+                // inserts a newline for it (issue #6).
+                if matches!(
+                    event,
+                    InputEvent::PressEnter {
+                        secondary: true,
+                        ..
+                    }
+                ) {
+                    this.run_under_cursor(editor, cx);
+                }
+            },
+        );
         Self {
             editor,
+            runner,
             focus_handle: cx.focus_handle(),
+            _observed_editor: observed_editor,
         }
+    }
+
+    /// Runs the Statement containing the cursor (issue #6). The split is
+    /// pure and runs on the UI thread; the Oracle call does not.
+    fn run_under_cursor(&mut self, editor: &Entity<EditorState>, cx: &mut Context<Self>) {
+        let (text, cursor) = {
+            let state = editor.read(cx);
+            (state.value().to_string(), state.cursor())
+        };
+        let Some(statement) = statement_at(&text, cursor) else {
+            return;
+        };
+        self.runner
+            .update(cx, |runner, cx| runner.run(statement.text, cx));
     }
 }
 
@@ -183,8 +225,12 @@ pub struct Workspace {
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let (dock_area, _skin) = DockSkin::dock_area("oraurust-dock", Some(1), window, cx);
-        let center = DockLayout::tabs()
-            .panel_view(panel_handle(cx.new(|cx| EditorPanel::new(window, cx))), cx);
+        let session = cx.new(|_| Session::default());
+        let runner = cx.new(|_| QueryRunner::new(session.clone()));
+        let center = DockLayout::tabs().panel_view(
+            panel_handle(cx.new(|cx| EditorPanel::new(runner.clone(), window, cx))),
+            cx,
+        );
         let left = DockLayout::tabs().panel_view(
             panel_handle(cx.new(|cx| {
                 PlaceholderPanel::new(
@@ -197,22 +243,15 @@ impl Workspace {
             cx,
         );
         let right = DockLayout::tabs().panel_view(
-            panel_handle(cx.new(|cx| ConnectionPanel::new(window, cx))),
+            panel_handle(cx.new(|cx| ConnectionPanel::new(session, window, cx))),
             cx,
         );
         let bottom = DockLayout::tabs().panel_view(
-            panel_handle(cx.new(|cx| {
-                PlaceholderPanel::new(
-                    "Result Grid",
-                    "Result Grid",
-                    "Result Grid — coming in ticket 04 (issue #6)",
-                    cx,
-                )
-            })),
+            panel_handle(cx.new(|cx| ResultGridPanel::new(runner, window, cx))),
             cx,
         );
 
-        _ = dock_area.update(cx, |view, cx| {
+        dock_area.update(cx, |view, cx| {
             view.set_center(center, window, cx);
             view.set_dock(DockPlacement::Left, left, window, cx);
             view.set_dock_size(DockPlacement::Left, px(220.), window, cx);

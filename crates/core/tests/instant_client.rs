@@ -1,5 +1,5 @@
-use oraurust_core::instant_client::{ClientStatus, check, classify_error, remediation};
 use oraurust_core::DbError;
+use oraurust_core::instant_client::{ClientStatus, check, classify_error, remediation};
 
 #[test]
 fn missing_client_when_no_search_path_holds_oci_dll() {
@@ -46,15 +46,21 @@ fn incompatible_client_version_is_reported_as_such() {
         position: None,
     };
     let err = classify_error(raw).expect("recognised as a client problem");
-    assert!(err.message.to_lowercase().contains("version"), "{}", err.message);
+    assert!(
+        err.message.to_lowercase().contains("version"),
+        "{}",
+        err.message
+    );
 }
 
 #[test]
 fn ordinary_oracle_errors_pass_through_untouched() {
-    assert!(classify_error(DbError {
-        code: "ORA-12154".into(),
-        message: "TNS:could not resolve the connect identifier specified".into(),
-        position: None,
-    })
-    .is_none());
+    assert!(
+        classify_error(DbError {
+            code: "ORA-12154".into(),
+            message: "TNS:could not resolve the connect identifier specified".into(),
+            position: None,
+        })
+        .is_none()
+    );
 }

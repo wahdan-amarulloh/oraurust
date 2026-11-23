@@ -7,18 +7,19 @@
 
 use std::path::PathBuf;
 
+use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dock::{BasePanel, Panel, PanelEvent};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::notification::Notification;
-use gpui_kit::component::WindowExt as _;
-use gpui_kit::component::{ActiveTheme as _, h_flex, v_flex, Disableable as _};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use oraurust_core::instant_client::{ClientStatus, check, remediation};
 use oraurust_core::{Profile, ProfileStore};
 
 use crate::oracle_conn::OraConnection;
+use crate::session::{Session, SessionState};
 
 /// Where profiles are persisted: `%APPDATA%\oraurust\profiles.json`.
 fn default_store() -> ProfileStore {
@@ -41,15 +42,6 @@ fn client_search_paths() -> Vec<PathBuf> {
     paths
 }
 
-/// The active session's state, as shown in the panel.
-#[derive(Clone, Debug)]
-enum ConnState {
-    Idle,
-    Connecting(String),
-    Connected { profile: String, detail: String },
-    Failed(String),
-}
-
 /// A dock panel for managing Connection profiles.
 pub struct ConnectionPanel {
     store: ProfileStore,
@@ -61,8 +53,10 @@ pub struct ConnectionPanel {
     service: Entity<InputState>,
     username: Entity<InputState>,
     password: Entity<InputState>,
-    session: Option<OraConnection>,
-    state: ConnState,
+    /// The live session, shared with the Editor's execution and the Result
+    /// Grid (issue #6).
+    session: Entity<Session>,
+    _observed_session: Subscription,
     focus_handle: FocusHandle,
 }
 
@@ -74,7 +68,7 @@ impl Focusable for ConnectionPanel {
 }
 
 impl ConnectionPanel {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(session: Entity<Session>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut text_input = |placeholder: &str, cx: &mut Context<Self>| {
             cx.new(|cx| {
                 InputState::new(window, cx)
@@ -92,6 +86,7 @@ impl ConnectionPanel {
                 .placeholder("Password".to_string())
                 .masked(true)
         });
+        let observed_session = cx.observe(&session, |_this, _session, cx| cx.notify());
 
         let mut panel = Self {
             store: default_store(),
@@ -103,28 +98,38 @@ impl ConnectionPanel {
             service,
             username,
             password,
-            session: None,
-            state: ConnState::Idle,
+            session,
+            _observed_session: observed_session,
             focus_handle: cx.focus_handle(),
         };
         panel.reload(cx);
         panel
     }
 
+    fn state(&self, cx: &App) -> SessionState {
+        self.session.read(cx).state().clone()
+    }
+
     /// Re-reads profiles from disk; also surfaces a startup Instant Client
     /// problem in the status line (issue #5: readable error, not a panic).
     fn reload(&mut self, cx: &mut Context<Self>) {
         if let ClientStatus::Missing = check(&client_search_paths()) {
-            self.state = ConnState::Failed(remediation());
+            self.fail(remediation(), cx);
         }
         match self.store.load() {
             Ok(profiles) => self.profiles = profiles,
-            Err(e) => self.state = ConnState::Failed(e.to_string()),
+            Err(e) => self.fail(e.to_string(), cx),
         }
         if self.selected.is_some_and(|ix| ix >= self.profiles.len()) {
             self.selected = None;
         }
         cx.notify();
+    }
+
+    /// Marks the session failed and shows `message` in the status line.
+    fn fail(&mut self, message: String, cx: &mut Context<Self>) {
+        self.session
+            .update(cx, |session, cx| session.set_failed(message, cx));
     }
 
     fn value(&self, input: &Entity<InputState>, cx: &App) -> String {
@@ -183,9 +188,9 @@ impl ConnectionPanel {
         if let Err(e) = self.store.delete(&profile.name) {
             window.push_notification(Notification::error(e.to_string()), cx);
         }
-        if matches!(&self.state, ConnState::Connected { profile: p, .. } if p == &profile.name) {
-            self.session = None;
-            self.state = ConnState::Idle;
+        if self.state(cx).connected_profile() == Some(profile.name.as_str()) {
+            self.session
+                .update(cx, |session, cx| session.disconnect(cx));
         }
         self.selected = None;
         self.reload(cx);
@@ -200,11 +205,11 @@ impl ConnectionPanel {
         let Some(profile) = self.selected_profile().cloned() else {
             return;
         };
-        if matches!(self.state, ConnState::Connecting(_)) {
+        if self.state(cx).is_connecting() {
             return;
         }
-        self.state = ConnState::Connecting(profile.name.clone());
-        cx.notify();
+        self.session
+            .update(cx, |session, cx| session.set_connecting(&profile.name, cx));
 
         cx.spawn(async move |this, cx| {
             // ODPI-C is blocking: run the whole handshake off the UI thread.
@@ -213,30 +218,26 @@ impl ConnectionPanel {
                     OraConnection::connect(&profile).map(|session| (session, profile))
                 })
                 .await;
-            this.update(cx, |this, cx| {
-                match result {
-                    Ok((session, profile)) => {
-                        this.session = Some(session);
-                        this.state = ConnState::Connected {
-                            profile: profile.name.clone(),
-                            detail: format!("{}@{}", profile.username, profile.connect_string()),
-                        };
-                    }
-                    Err(e) => {
-                        this.session = None;
-                        this.state = ConnState::Failed(format!("{}: {}", e.code, e.message));
-                    }
+            this.update(cx, |this, cx| match result {
+                Ok((connection, profile)) => {
+                    let detail = format!("{}@{}", profile.username, profile.connect_string());
+                    this.session.update(cx, |session, cx| {
+                        session.set_connected(&profile.name, detail, connection, cx)
+                    });
                 }
-                cx.notify();
+                Err(e) => {
+                    this.session
+                        .update(cx, |session, cx| session.set_failed(e.to_string(), cx));
+                }
             })
+            .ok();
         })
         .detach();
     }
 
     fn disconnect(&mut self, cx: &mut Context<Self>) {
-        self.session = None;
-        self.state = ConnState::Idle;
-        cx.notify();
+        self.session
+            .update(cx, |session, cx| session.disconnect(cx));
     }
 
     fn select(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -248,8 +249,9 @@ impl ConnectionPanel {
             .update(cx, |s, cx| s.set_value(profile.name, window, cx));
         self.host
             .update(cx, |s, cx| s.set_value(profile.host, window, cx));
-        self.port
-            .update(cx, |s, cx| s.set_value(profile.port.to_string(), window, cx));
+        self.port.update(cx, |s, cx| {
+            s.set_value(profile.port.to_string(), window, cx)
+        });
         self.service
             .update(cx, |s, cx| s.set_value(profile.service, window, cx));
         self.username
@@ -288,19 +290,23 @@ impl Panel for ConnectionPanel {
 
 impl Render for ConnectionPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (status, status_color) = match &self.state {
-            ConnState::Idle => ("Not connected".to_string(), cx.theme().muted_foreground),
-            ConnState::Connecting(name) => {
-                (format!("Connecting to {name}…"), cx.theme().muted_foreground)
+        let state = self.state(cx);
+        let (status, status_color) = match &state {
+            SessionState::Disconnected => {
+                ("Not connected".to_string(), cx.theme().muted_foreground)
             }
-            ConnState::Connected { profile, detail } => (
+            SessionState::Connecting(name) => (
+                format!("Connecting to {name}…"),
+                cx.theme().muted_foreground,
+            ),
+            SessionState::Connected { profile, detail } => (
                 format!("Connected: {profile} ({detail})"),
                 cx.theme().success,
             ),
-            ConnState::Failed(msg) => (msg.clone(), cx.theme().danger),
+            SessionState::Failed(msg) => (msg.clone(), cx.theme().danger),
         };
-        let is_connected = matches!(self.state, ConnState::Connected { .. });
-        let connecting = matches!(self.state, ConnState::Connecting(_));
+        let is_connected = state.is_connected();
+        let connecting = state.is_connecting();
         let has_selection = self.selected.is_some();
 
         let mut list = v_flex().gap_1();
@@ -340,9 +346,11 @@ impl Render for ConnectionPanel {
             .child(
                 h_flex()
                     .gap_2()
-                    .child(Button::new("connect").label("Connect").on_click(
-                        cx.listener(|this, _, _window, cx| this.connect_selected(cx)),
-                    ))
+                    .child(
+                        Button::new("connect").label("Connect").on_click(
+                            cx.listener(|this, _, _window, cx| this.connect_selected(cx)),
+                        ),
+                    )
                     .child(
                         Button::new("disconnect")
                             .label("Disconnect")
@@ -353,19 +361,26 @@ impl Render for ConnectionPanel {
                         Button::new("delete")
                             .label("Delete")
                             .when(!has_selection, |b| b.disabled(true))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.delete_selected(window, cx)
-                            })),
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.delete_selected(window, cx)),
+                            ),
                     ),
             )
             .child(
                 div()
                     .text_sm()
-                    .when(connecting, |this| this.text_color(cx.theme().muted_foreground))
+                    .when(connecting, |this| {
+                        this.text_color(cx.theme().muted_foreground)
+                    })
                     .text_color(status_color)
                     .child(status),
             )
-            .child(div().text_xs().child("Saved profiles").text_color(cx.theme().muted_foreground))
+            .child(
+                div()
+                    .text_xs()
+                    .child("Saved profiles")
+                    .text_color(cx.theme().muted_foreground),
+            )
             .child(div().flex_1().overflow_hidden().child(list))
             .child(div().h(px(1.)).bg(cx.theme().border))
             .child(self.field("Name", &self.name.clone(), cx))
@@ -373,12 +388,16 @@ impl Render for ConnectionPanel {
             .child(
                 h_flex()
                     .gap_2()
-                    .child(v_flex().flex_1().child(self.field("Port", &self.port.clone(), cx)))
                     .child(
                         v_flex()
                             .flex_1()
-                            .child(self.field("Service / SID", &self.service.clone(), cx)),
-                    ),
+                            .child(self.field("Port", &self.port.clone(), cx)),
+                    )
+                    .child(v_flex().flex_1().child(self.field(
+                        "Service / SID",
+                        &self.service.clone(),
+                        cx,
+                    ))),
             )
             .child(self.field("Username", &self.username.clone(), cx))
             .child(self.field("Password", &self.password.clone(), cx))

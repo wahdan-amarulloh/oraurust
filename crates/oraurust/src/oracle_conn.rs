@@ -19,13 +19,19 @@ impl OraConnection {
     /// missing/incompatible Instant Client surfaces as an actionable message
     /// rather than a raw DPI- error.
     pub fn connect(profile: &Profile) -> Result<Self> {
-        oracle::Connection::connect(
-            &profile.username,
-            &profile.password,
-            profile.connect_string(),
-        )
-        .map(|session| Self { session })
-        .map_err(|e| map_error(e, None))
+        Self::connect_with_connect_string(profile, profile.connect_string())
+    }
+
+    /// Connects with an explicit connect string instead of the one built from
+    /// the profile — used by the opt-in integration test, which can point at a
+    /// full descriptor the profile fields cannot express.
+    fn connect_with_connect_string(
+        profile: &Profile,
+        connect_string: impl AsRef<str>,
+    ) -> Result<Self> {
+        oracle::Connection::connect(&profile.username, &profile.password, connect_string)
+            .map(|session| Self { session })
+            .map_err(|e| map_error(e, None))
     }
 }
 
@@ -48,9 +54,12 @@ fn map_error(error: oracle::Error, position: Option<usize>) -> DbError {
             .map(|dpi| format!("DPI-{dpi}"))
             .unwrap_or_default(),
     };
-    // `offset()` is ODPI-C's 0-based parse-error offset (0 when it has none),
-    // so it becomes the 1-based position the UI reports (issue #6).
-    let position = position.or_else(|| Some(dberr.offset() as usize).filter(|&p| p > 0));
+    // `offset()` is ODPI-C's 0-based parse-error offset (0 when it has none);
+    // `DbError.position` is 1-based, so shift it and drop the "no position".
+    let position = position.or_else(|| match dberr.offset() {
+        0 => None,
+        offset => Some(offset as usize + 1),
+    });
     map_classified(DbError::new(code, dberr.message(), position))
 }
 
@@ -85,7 +94,9 @@ impl Connection for OraConnection {
             let mut rows: Vec<Vec<Option<String>>> = Vec::new();
             for row in result.by_ref() {
                 let row = row.map_err(|e| map_error(e, None))?;
-                let values = (1..=columns.len())
+                // rust-oracle column indexes are 0-based; a 1-based loop asked
+                // for one past the end ("invalid column index 1 (zero-based)").
+                let values = (0..columns.len())
                     .map(|ix| row.get::<usize, Option<String>>(ix).map_err(|e| map_error(e, None)))
                     .collect::<Result<Vec<Option<String>>>>()?;
                 rows.push(values);
@@ -119,8 +130,9 @@ impl Connection for OraConnection {
                    ORDER BY object_type, object_name";
         for row in self.session.query(sql, &[]).map_err(|e| map_error(e, None))? {
             let row = row.map_err(|e| map_error(e, None))?;
-            let name: String = row.get(1).map_err(|e| map_error(e, None))?;
-            let kind_text: String = row.get(2).map_err(|e| map_error(e, None))?;
+            // 0-based: column 0 is object_name, column 1 object_type.
+            let name: String = row.get(0).map_err(|e| map_error(e, None))?;
+            let kind_text: String = row.get(1).map_err(|e| map_error(e, None))?;
             if let Some(kind) = parse_object_kind(&kind_text) {
                 objects.push(Object { name, kind });
             }
@@ -200,3 +212,115 @@ fn sql_name(kind: ObjectKind) -> &'static str {
         .map(|(_, label)| *label)
         .expect("every ObjectKind has a dictionary label")
 }
+
+/// Opt-in tests against a real database, because the driver is invisible to
+/// the mocked core seams: a 1-based column index in `execute` made every
+/// SELECT fail with "invalid column index 1 (zero-based)".
+///
+/// Skipped unless `ORAURUST_IT=1` and all of `ORAURUST_IT_USER`,
+/// `ORAURUST_IT_PASSWORD`, `ORAURUST_IT_CONNECT_STRING` are set (see the
+/// crate README).
+#[cfg(test)]
+mod integration {
+    use super::*;
+
+    fn connection() -> Option<OraConnection> {
+        if std::env::var("ORAURUST_IT").ok().as_deref() != Some("1") {
+            return None;
+        }
+        let profile = Profile {
+            name: "it".into(),
+            host: String::new(),
+            port: 1521,
+            service: String::new(),
+            username: std::env::var("ORAURUST_IT_USER").ok()?,
+            password: std::env::var("ORAURUST_IT_PASSWORD").ok()?,
+        };
+        let connect_string = std::env::var("ORAURUST_IT_CONNECT_STRING").ok()?;
+        Some(
+            OraConnection::connect_with_connect_string(&profile, connect_string)
+                .expect("integration connection failed"),
+        )
+    }
+
+    fn skip() {
+        eprintln!("skipped: set ORAURUST_IT=1 and the ORAURUST_IT_* variables");
+    }
+
+    #[test]
+    fn single_column_select_returns_its_one_value() {
+        let Some(conn) = connection() else { return skip() };
+
+        match conn.execute("select 1 from dual").expect("select 1 from dual") {
+            StatementOutcome::Rows(result) => {
+                assert_eq!(result.columns.len(), 1);
+                assert_eq!(result.rows.len(), 1);
+                assert_eq!(result.rows[0].len(), 1, "one value per column");
+                assert_eq!(result.rows[0][0].as_deref(), Some("1"));
+            }
+            other => panic!("expected Rows, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn multi_column_select_returns_every_value_and_nulls() {
+        let Some(conn) = connection() else { return skip() };
+
+        let outcome = conn
+            .execute("select 1 as a, 'x' as b, null as c from dual")
+            .expect("three-column select");
+        match outcome {
+            StatementOutcome::Rows(result) => {
+                assert_eq!(result.columns.len(), 3);
+                assert_eq!(result.rows.len(), 1);
+                assert_eq!(result.rows[0].len(), 3);
+                assert_eq!(result.rows[0][0].as_deref(), Some("1"));
+                assert_eq!(result.rows[0][1].as_deref(), Some("x"));
+                assert_eq!(result.rows[0][2], None, "NULL stays None");
+            }
+            other => panic!("expected Rows, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn describe_schema_reads_both_dictionary_columns() {
+        let Some(conn) = connection() else { return skip() };
+
+        let catalog = conn.describe_schema().expect("describe_schema");
+        for object in &catalog.objects {
+            assert!(!object.name.is_empty());
+        }
+    }
+
+    #[test]
+    fn oracle_errors_show_the_code_once_with_position() {
+        let Some(conn) = connection() else { return skip() };
+
+        let error = conn
+            .execute("select no_such_column from dual")
+            .expect_err("unknown column");
+        assert_eq!(error.code, "ORA-00904");
+        assert_eq!(
+            error.to_string().matches("ORA-00904").count(),
+            1,
+            "the code must not be repeated: {error}"
+        );
+        assert!(
+            error.position.is_some_and(|position| position >= 1),
+            "Oracle reports a 1-based position: {error}"
+        );
+    }
+
+    #[test]
+    fn dml_reports_the_affected_row_count() {
+        let Some(conn) = connection() else { return skip() };
+
+        // A no-op update inside the session's open transaction; it is never
+        // committed, so the database is unchanged.
+        let outcome = conn
+            .execute("update dual set dummy = dummy where 1 = 0")
+            .expect("no-op update");
+        assert_eq!(outcome, StatementOutcome::RowCount(0));
+    }
+}
+

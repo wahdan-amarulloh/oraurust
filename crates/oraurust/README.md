@@ -39,8 +39,16 @@ From the repo root (workspace root): `cargo run` to launch the app, `cargo build
 
 `cargo test` (also from the repo root) runs the logic core's tests from
 `crates/core`: the `ScriptSplitter`, `statement_at`, and the `Connection` seam
-with its mock (issues #4, #6). The app crate itself has no tests — its UI views
-are not unit tested; the tested seams live in `crates/core`.
+with its mock (issues #4, #6). The app crate itself has no unit tests — its UI
+views are not unit tested; the tested seams live in `crates/core`.
+
+The app crate has no UI tests. Its one database test is the opt-in module at the
+bottom of `src/oracle_conn.rs`: it drives the real `OraConnection` against a live
+11g database, because the driver is invisible to the mocked core seams (the
+0-based column indexing bug of issue #6 is exactly what a mock hides). It is
+skipped unless `ORAURUST_IT=1` and all of `ORAURUST_IT_USER`,
+`ORAURUST_IT_PASSWORD`, `ORAURUST_IT_CONNECT_STRING` (e.g. `//host:1521/service`)
+are set. Run it with `cargo test -p oraurust oracle_conn`.
 
 ## Vendored grammar
 

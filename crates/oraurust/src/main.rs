@@ -2,11 +2,15 @@
 //!
 //! Issue #3 — app shell: a GPUI window with a dock layout (editor pane in
 //! the center, left sidebar for the future Schema Browser, bottom panel for
-//! the future Result Grid). No database functionality yet.
+//! the Result Grid). Issue #6 — Ctrl+Enter executes the statement under the
+//! cursor on the background executor and its output lands in the Result Grid.
 
 mod connection_panel;
 mod oracle_conn;
 mod plsql;
+mod result_grid;
+mod runner;
+mod session;
 mod workspace;
 
 use gpui_kit::assets::Assets;

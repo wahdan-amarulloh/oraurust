@@ -114,7 +114,7 @@ impl MockConnection {
 }
 
 impl Connection for MockConnection {
-    fn execute(&mut self, statement: &str) -> Result<StatementOutcome> {
+    fn execute(&self, statement: &str) -> Result<StatementOutcome> {
         // Exact scripted matches win over the wildcard, which wins over the
         // fallback.
         for (text, outcome) in &self.scripted {

@@ -62,7 +62,7 @@ fn map_error(error: oracle::Error, position: Option<usize>) -> DbError {
 }
 
 impl Connection for OraConnection {
-    fn execute(&mut self, statement: &str) -> Result<StatementOutcome> {
+    fn execute(&self, statement: &str) -> Result<StatementOutcome> {
         let mut stmt = self
             .session
             .statement(statement)
@@ -98,6 +98,13 @@ impl Connection for OraConnection {
                 Ok(StatementOutcome::RowCount(affected))
             }
         }
+    }
+
+    fn cancel(&self) -> Result<()> {
+        // `break_execution` is an OCI call: it must also run off the UI
+        // thread (the caller does that). The server raises ORA-01013 on the
+        // interrupted fetch, which surfaces as the run's error.
+        self.session.break_execution().map_err(|e| map_error(e, None))
     }
 
     fn describe_schema(&self) -> Result<Catalog> {

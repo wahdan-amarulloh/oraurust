@@ -4,7 +4,7 @@ use oraurust_core::{
 
 #[test]
 fn dml_returns_row_count_and_surfaces_ora_errors() {
-    let mut conn = MockConnection::new()
+    let conn = MockConnection::new()
         .with_row_count(3)
         .with_error(
             "select * from missing",
@@ -42,7 +42,7 @@ fn dml_returns_row_count_and_surfaces_ora_errors() {
 
 #[test]
 fn select_returns_columns_and_rows() {
-    let mut conn = MockConnection::new().with_select(
+    let conn = MockConnection::new().with_select(
         vec![Column { name: "ID".into(), type_name: "NUMBER".into() }],
         vec![vec![Some("1".into()), None]],
     );
@@ -62,7 +62,7 @@ fn select_returns_columns_and_rows() {
 #[test]
 fn keyed_select_wins_over_the_wildcard_select() {
     let columns = vec![Column { name: "X".into(), type_name: "NUMBER".into() }];
-    let mut conn = MockConnection::new()
+    let conn = MockConnection::new()
         .with_select(columns.clone(), vec![vec![Some("wildcard".into())]])
         .with_select_for("select specific from t", columns, vec![vec![Some("keyed".into())]]);
 
@@ -74,6 +74,20 @@ fn keyed_select_wins_over_the_wildcard_select() {
         StatementOutcome::Rows(rs) => assert_eq!(rs.rows[0][0], Some("wildcard".into())),
         other => panic!("expected Rows, got {other:?}"),
     }
+}
+
+#[test]
+fn execute_works_through_a_shared_reference() {
+    // Execution runs on a background thread while the UI keeps the connection
+    // to cancel it (issue #6), so the seam must not need `&mut`.
+    let conn = MockConnection::new().with_row_count(2);
+    let shared = &conn;
+
+    assert_eq!(
+        shared.execute("update t set x = 1"),
+        Ok(StatementOutcome::RowCount(2))
+    );
+    assert_eq!(shared.cancel(), Ok(()), "cancelling is a no-op by default");
 }
 
 #[test]
@@ -96,3 +110,4 @@ fn ddl_fetch_and_schema_come_through_the_seam() {
     );
     assert_eq!(conn.describe_schema().unwrap().objects, vec![table]);
 }
+

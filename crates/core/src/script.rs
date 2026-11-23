@@ -15,6 +15,10 @@ pub struct Statement {
     pub start_line: usize,
     /// 1-based line of the script where the statement's text ends.
     pub end_line: usize,
+    /// Byte offset into the script where the statement's text begins.
+    pub start_offset: usize,
+    /// Byte offset into the script just past the statement's text.
+    pub end_offset: usize,
 }
 
 /// Splits a script into statements.
@@ -252,12 +256,40 @@ fn push_statement(
     if !has_code {
         return;
     }
-    let text = script[start..end].trim();
+    let raw = &script[start..end];
+    let text = raw.trim();
     if !text.is_empty() {
+        let start_offset = start + (raw.len() - raw.trim_start().len());
         statements.push(Statement {
             text: text.to_string(),
             start_line,
             end_line,
+            start_offset,
+            end_offset: start_offset + text.len(),
         });
     }
+}
+
+/// The statement under a cursor at `cursor_offset` (a UTF-8 byte offset into
+/// `script`).
+///
+/// When the cursor sits inside no statement — a blank line or a comment
+/// between statements — the nearest statement by distance wins; a tie goes to
+/// the earlier statement. `None` only when the script has no statements.
+pub fn statement_at(script: &str, cursor_offset: usize) -> Option<Statement> {
+    let cursor = cursor_offset.min(script.len());
+    let mut nearest: Option<(usize, Statement)> = None;
+    for statement in split(script) {
+        let distance = if cursor < statement.start_offset {
+            statement.start_offset - cursor
+        } else {
+            cursor.saturating_sub(statement.end_offset)
+        };
+        // Strict `<`: on a tie the earlier statement, already `nearest`,
+        // is kept.
+        if nearest.as_ref().is_none_or(|(best, _)| distance < *best) {
+            nearest = Some((distance, statement));
+        }
+    }
+    nearest.map(|(_, statement)| statement)
 }

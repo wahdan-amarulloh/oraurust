@@ -12,11 +12,17 @@ The logic behind the app, proven entirely by tests with no UI and no database:
   anonymous `begin`/`declare` and stored-unit definitions (`create [or replace]
   procedure/function/package/trigger/type ...`) — keep their internal
   semicolons; only a line-anchored `/` terminates them. Each `Statement` keeps
-  its 1-based start/end lines for error-position mapping.
+  its 1-based start/end lines and byte offsets for error-position mapping.
+- **Statement under cursor** (`script::statement_at`, issue #6): pure function,
+  script text + cursor byte offset → the statement to execute for Ctrl+Enter.
+  A cursor between statements picks the nearest; a tie goes to the earlier one.
 - **Connection seam** (`src/connection/`): the trait boundary between app and
-  database — `execute`, `describe_schema`, `fetch_ddl`, `fetch_source` — with
-  a scripted `MockConnection` returning canned outcomes (rows, row counts,
-  `ORA-` errors).
+  database — `execute`, `cancel`, `describe_schema`, `fetch_ddl`,
+  `fetch_source` — with a scripted `MockConnection` returning canned outcomes
+  (rows, row counts, `ORA-` errors). `execute` and `cancel` take `&self` so a
+  statement runs on a background thread while the UI keeps the connection to
+  cancel it. `DbError` implements `Display` (`ORA-01756: message (at position N)`),
+  so Oracle errors surface readably.
 - **Connection profiles** (`src/connection/profile.rs`, `store.rs`, issue #5):
   `Profile` (name, host, port, service/SID, credentials) with Easy Connect
   string building (`//host:port/service`), and `ProfileStore`, a JSON file
@@ -35,14 +41,16 @@ background thread; that implementation lives in the app crate
 ## Layout
 
 ```
-src/script.rs                ScriptSplitter (pure)
+src/script.rs                ScriptSplitter + statement_at (pure)
 src/connection/mod.rs        the Connection trait + shared types (ResultSet, DbError, ...)
 src/connection/mock.rs       scripted MockConnection for tests
 src/connection/profile.rs    Profile + Easy Connect string
 src/connection/store.rs      ProfileStore (encrypted-at-rest persistence)
 src/instant_client.rs        Instant Client probe + error remediation
 tests/script_splitter.rs     table-driven splitter tests (the seam's spec)
+tests/statement_at.rs        statement-under-cursor tests
 tests/connection_mock.rs     seam behavior through the mock
+tests/db_error.rs            readable ORA- error text
 tests/profile.rs             connect-string tests
 tests/profile_store.rs       persistence + encryption-at-rest tests
 tests/instant_client.rs      probe + error classification tests

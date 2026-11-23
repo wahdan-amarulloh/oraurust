@@ -14,11 +14,24 @@ pub use profile::Profile;
 pub use store::ProfileStore;
 
 /// The app ↔ database boundary. All Oracle-specific code lives behind it.
-pub trait Connection {
+///
+/// `Send + Sync` so an `Arc<dyn Connection>` can be handed to the background
+/// executor while the UI keeps a handle to cancel (issue #6).
+pub trait Connection: Send + Sync {
     /// Executes one Statement. A SELECT yields a [`StatementOutcome::Rows`],
     /// DML a [`StatementOutcome::RowCount`] within the session's open
     /// Transaction, DDL a [`StatementOutcome::Ddl`] (implicit commit).
-    fn execute(&mut self, statement: &str) -> Result<StatementOutcome>;
+    ///
+    /// Takes `&self` so execution can run on a background thread while the UI
+    /// still holds the connection — to cancel the running statement.
+    fn execute(&self, statement: &str) -> Result<StatementOutcome>;
+
+    /// Cancels the statement running on this connection, if any (issue #6's
+    /// cancel control). The default is a no-op for connections that cannot
+    /// cancel; Oracle implements it with `break_execution`.
+    fn cancel(&self) -> Result<()> {
+        Ok(())
+    }
 
     /// Loads the Catalog: the connected user's visible objects.
     fn describe_schema(&self) -> Result<Catalog>;
@@ -42,6 +55,22 @@ pub struct DbError {
     /// 1-based offset into the failing statement, when Oracle reports one.
     pub position: Option<usize>,
 }
+
+impl std::fmt::Display for DbError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.code.is_empty() {
+            write!(f, "{}", self.message)?;
+        } else {
+            write!(f, "{}: {}", self.code, self.message)?;
+        }
+        if let Some(position) = self.position {
+            write!(f, " (at position {position})")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for DbError {}
 
 /// What executing one Statement produced.
 #[derive(Debug, Clone, PartialEq)]

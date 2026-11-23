@@ -71,5 +71,6 @@ the worker.
   when the worker drops it.
 - Fetching past the cap is refused in the worker; the grid keeps the rows up
   to the cap and the status line says so.
-- If a future ticket (e.g. CSV export, #7) needs to stream past the cap, it
-  should bypass `ROW_CAP` explicitly rather than raise it for every SELECT.
+- If a future ticket needs to stream past the cap, it should bypass `ROW_CAP`
+  explicitly rather than raise it for every SELECT. (CSV export, #7, shipped
+  as a pure function over the fetched rows instead — see ADR-0003.)

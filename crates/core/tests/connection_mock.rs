@@ -1,6 +1,6 @@
 use oraurust_core::{
     CancelHandle, Catalog, Column, Connection, DbError, FETCH_ROWS, MockCancel, MockConnection,
-    Object, ObjectKind, ROW_CAP, StatementOutcome,
+    Object, ObjectKind, ROW_CAP, StatementOutcome, TransactionEnd,
 };
 
 fn id_column() -> Column {
@@ -155,6 +155,29 @@ fn a_cursor_stops_at_the_row_cap_and_reports_it() {
     };
     assert_eq!(last.fetched, ROW_CAP, "the cap is exactly ROW_CAP");
     assert!(!last.more, "the cap ends the Result Set");
+}
+
+#[test]
+fn commit_and_rollback_are_scriptable_as_transaction_ends() {
+    // Issue #7: COMMIT/ROLLBACK go through `execute` (the seam stays at four
+    // methods, ADR-0002), so the mock must be able to script them.
+    let conn = MockConnection::new()
+        .with_transaction_end("COMMIT", TransactionEnd::Commit)
+        .with_transaction_end("ROLLBACK", TransactionEnd::Rollback);
+
+    assert_eq!(
+        conn.execute("COMMIT").unwrap(),
+        StatementOutcome::Transaction(TransactionEnd::Commit)
+    );
+    assert_eq!(
+        conn.execute("ROLLBACK").unwrap(),
+        StatementOutcome::Transaction(TransactionEnd::Rollback)
+    );
+    // A different end is a different outcome.
+    assert_ne!(
+        StatementOutcome::Transaction(TransactionEnd::Commit),
+        StatementOutcome::Transaction(TransactionEnd::Rollback)
+    );
 }
 
 #[test]

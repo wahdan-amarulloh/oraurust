@@ -13,6 +13,8 @@ pub use mock::{MockCancel, MockConnection};
 pub use profile::Profile;
 pub use store::ProfileStore;
 
+use crate::transaction::TransactionEnd;
+
 /// The app ↔ database boundary. All Oracle-specific code lives behind it.
 ///
 /// Four methods, as the spec fixes it (issue #1). `execute` takes `&self` so
@@ -22,7 +24,8 @@ pub trait Connection: Send + Sync {
     /// Executes one Statement. A SELECT yields a [`StatementOutcome::Rows`]
     /// first page (plus a cursor when more rows remain), DML a
     /// [`StatementOutcome::RowCount`] within the session's open Transaction,
-    /// DDL a [`StatementOutcome::Ddl`] (implicit commit).
+    /// DDL a [`StatementOutcome::Ddl`] (implicit commit), and COMMIT/ROLLBACK
+    /// a [`StatementOutcome::Transaction`] (issue #7).
     fn execute(&self, statement: &str) -> Result<StatementOutcome>;
 
     /// Loads the Catalog: the connected user's visible objects.
@@ -118,8 +121,11 @@ pub enum StatementOutcome {
     },
     /// DML: affected row count; the session's Transaction stays open.
     RowCount(u64),
-    /// DDL: succeeded with an implicit commit (Oracle semantics).
+    /// DDL — or any other statement Oracle runs outside the transaction
+    /// (TRUNCATE, GRANT, COMMENT, …): succeeded with an implicit commit.
     Ddl,
+    /// COMMIT or ROLLBACK: the session's Transaction ended (issue #7).
+    Transaction(TransactionEnd),
 }
 
 impl std::fmt::Debug for StatementOutcome {
@@ -132,6 +138,7 @@ impl std::fmt::Debug for StatementOutcome {
                 .finish(),
             StatementOutcome::RowCount(count) => f.debug_tuple("RowCount").field(count).finish(),
             StatementOutcome::Ddl => f.write_str("Ddl"),
+            StatementOutcome::Transaction(end) => f.debug_tuple("Transaction").field(end).finish(),
         }
     }
 }
@@ -152,6 +159,9 @@ impl PartialEq for StatementOutcome {
                 count == other_count
             }
             (StatementOutcome::Ddl, StatementOutcome::Ddl) => true,
+            (StatementOutcome::Transaction(end), StatementOutcome::Transaction(other_end)) => {
+                end == other_end
+            }
             _ => false,
         }
     }

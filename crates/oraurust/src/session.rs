@@ -12,6 +12,7 @@ use std::sync::Arc;
 use gpui_kit::*;
 use oraurust_core::{
     CancelHandle, Connection, Cursor, DbError, FETCH_ROWS, Page, Result, StatementOutcome,
+    TransactionEffect, TransactionEnd,
 };
 
 use crate::oracle_conn::OraConnection;
@@ -56,12 +57,24 @@ impl SessionState {
 ///
 /// The worker keeps the cursor; the UI only needs the first page and whether
 /// more rows remain, so this is not a [`StatementOutcome`] (which carries the
-/// cursor the worker owns).
+/// cursor the worker owns). The [`TransactionEffect`] travels alongside so the
+/// app never re-derives the dirty rule the core owns (issue #7).
 #[derive(Debug)]
-pub enum Executed {
-    Rows { page: Page },
+pub struct Executed {
+    pub outcome: ExecutedOutcome,
+    pub effect: TransactionEffect,
+}
+
+/// The UI-facing shape of a [`StatementOutcome`].
+#[derive(Debug)]
+pub enum ExecutedOutcome {
+    Rows {
+        page: Page,
+    },
     RowCount(u64),
     Ddl,
+    /// COMMIT or ROLLBACK succeeded: the session's Transaction ended.
+    Transaction(TransactionEnd),
 }
 
 /// What the UI asks the worker thread to do.
@@ -139,12 +152,19 @@ fn worker_loop(connection: Box<dyn Connection>, commands: flume::Receiver<Comman
                 // A new statement abandons any previous Result Set.
                 cursor = None;
                 let executed = match connection.execute(&statement) {
-                    Ok(StatementOutcome::Rows { page, cursor: next }) => {
-                        cursor = next;
-                        Ok(Executed::Rows { page })
+                    Ok(outcome) => {
+                        let effect = TransactionEffect::of_outcome(&outcome);
+                        let outcome = match outcome {
+                            StatementOutcome::Rows { page, cursor: next } => {
+                                cursor = next;
+                                ExecutedOutcome::Rows { page }
+                            }
+                            StatementOutcome::RowCount(count) => ExecutedOutcome::RowCount(count),
+                            StatementOutcome::Ddl => ExecutedOutcome::Ddl,
+                            StatementOutcome::Transaction(end) => ExecutedOutcome::Transaction(end),
+                        };
+                        Ok(Executed { outcome, effect })
                     }
-                    Ok(StatementOutcome::RowCount(count)) => Ok(Executed::RowCount(count)),
-                    Ok(StatementOutcome::Ddl) => Ok(Executed::Ddl),
                     Err(error) => Err(error),
                 };
                 let _ = reply.send(executed);

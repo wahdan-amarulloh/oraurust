@@ -59,7 +59,7 @@ enum Event   { Connected, Rows{id, cols, page, done}, RowCount{id, n}, Ddl{id},
 
 Session states: `Disconnected → Connecting → Idle(clean|dirty) → Executing → Lost`.
 
-**Seam note.** The spec fixes `Connection` at four methods (`execute`, `describe_schema`, `fetch_ddl`, `fetch_source`) and names it as a tested boundary. Commit/rollback can go through `execute("COMMIT")` / `execute("ROLLBACK")` (ticket #7), with the dirty flag derived from outcomes (DML row count → dirty; DDL, commit, rollback → clean). Cancel cannot, because `execute` is blocked: it needs a separate `CancelHandle` that calls `break_execution`. Paged fetch changes `StatementOutcome::Rows` from a full `ResultSet` to a first page plus a cursor. **Decided in [ADR-0002](../adr/0002-session-worker-cancel-paged-fetch.md)** (issue #6 shipped): four-method seam, separate `CancelHandle` obtained from the concrete driver, a `Session` worker thread, and 500-row pages capped at 10,000 rows.
+**Seam note.** The spec fixes `Connection` at four methods (`execute`, `describe_schema`, `fetch_ddl`, `fetch_source`) and names it as a tested boundary. Commit/rollback can go through `execute("COMMIT")` / `execute("ROLLBACK")` (ticket #7), with the dirty flag derived from outcomes (DML row count → dirty; DDL, commit, rollback → clean). Cancel cannot, because `execute` is blocked: it needs a separate `CancelHandle` that calls `break_execution`. Paged fetch changes `StatementOutcome::Rows` from a full `ResultSet` to a first page plus a cursor. **Decided in [ADR-0002](../adr/0002-session-worker-cancel-paged-fetch.md)** (issue #6 shipped): four-method seam, separate `CancelHandle` obtained from the concrete driver, a `Session` worker thread, and 500-row pages capped at 10,000 rows. **Transactions and CSV export are decided in [ADR-0003](../adr/0003-transactions-and-csv.md)** (issue #7 shipped): COMMIT/ROLLBACK as statements, the dirty rule in core (`TransactionEffect`/`TransactionState`), and a pure `csv::to_csv`.
 
 Profile target (new, in core):
 
@@ -174,7 +174,7 @@ Windows-only consequence: the base64 password fallback in `ProfileStore` stays o
 | Ticket | Design piece |
 |---|---|
 | #6 (04) Execute → Result Grid | one `Session` entity lifted out of `ConnectionPanel`: worker thread, Command/Event, Cancel, paged fetch with row count, zebra rows |
-| #7 (05) Row counts, commit/rollback, CSV | commit/rollback via `execute`, dirty flag, CSV streamed from the cursor |
+| #7 (05) Row counts, commit/rollback, CSV | commit/rollback via `execute`, dirty flag, CSV from the fetched rows — shipped per ADR-0003 |
 | #8 (06) Schema Browser | Catalog loaded lazily on expand; columns on table select |
 | #9 (07) DDL viewer + recompile | `fetch_source` / `fetch_ddl`; `ALL_ERRORS` mapped through `Statement.start_line` |
 | #10 (08) Editable Data Grid | `DataGridMutator`; join/view grids read-only |

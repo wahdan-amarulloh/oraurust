@@ -1,21 +1,25 @@
-//! The live Connection shared by the panels (issue #6).
+//! The live Connection and its worker thread (issue #6, ADR-0002).
 //!
 //! `ConnectionPanel` opens the session; the Editor's Ctrl+Enter execution and
-//! the Result Grid read it through this entity. It holds an `Arc` so a
-//! statement can run on the background executor while the UI keeps a handle
-//! to cancel it (issue #6's cancel control).
+//! the Result Grid reach the database only through [`SessionWorker`]. The
+//! worker owns the connection and the open cursor on its own thread, so OCI
+//! calls are serialised and the GPUI thread never blocks. Cancel bypasses the
+//! worker's queue — the worker is blocked in `execute` — and goes through a
+//! [`CancelHandle`] over the same session (ADR-0002).
 
 use std::sync::Arc;
 
 use gpui_kit::*;
-use oraurust_core::Connection;
+use oraurust_core::{
+    CancelHandle, Connection, Cursor, DbError, Page, Result, StatementOutcome, FETCH_ROWS,
+};
 
-/// The live session, shared by the panels (issue #6).
-///
-/// The connection is a `dyn Connection`, not the concrete ODPI-C type, so the
-/// app keeps talking to the seam ADR-0001 defines — and the background
-/// executor only needs `Send + Sync`, which the trait promises.
-pub type SharedConnection = Arc<dyn Connection>;
+use crate::oracle_conn::OraConnection;
+
+/// Commands queued ahead of the worker. Small: the UI awaits each command's
+/// reply before sending the next, so this is only slack, and a bounded queue
+/// gives backpressure rather than unbounded growth (ADR-0002).
+const COMMAND_QUEUE_DEPTH: usize = 8;
 
 /// The session state, as shown in the Connection panel.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -45,11 +49,129 @@ impl SessionState {
     }
 }
 
+/// What one `Execute` produced, as the worker reports it.
+///
+/// The worker keeps the cursor; the UI only needs the first page and whether
+/// more rows remain, so this is not a [`StatementOutcome`] (which carries the
+/// cursor the worker owns).
+#[derive(Debug)]
+pub enum Executed {
+    Rows { page: Page },
+    RowCount(u64),
+    Ddl,
+}
+
+/// What the UI asks the worker thread to do.
+enum Command {
+    Execute {
+        statement: String,
+        reply: flume::Sender<Result<Executed>>,
+    },
+    Fetch {
+        reply: flume::Sender<Result<Page>>,
+    },
+}
+
+/// A handle to the session's worker thread.
+///
+/// `Clone` so a background task can execute while the UI keeps one to cancel.
+#[derive(Clone)]
+pub struct SessionWorker {
+    commands: flume::Sender<Command>,
+    cancel: Arc<dyn CancelHandle>,
+}
+
+impl SessionWorker {
+    /// Runs `statement` on the worker thread. A SELECT's first page comes
+    /// back with `more` set when further pages remain; the worker keeps the
+    /// cursor.
+    pub async fn execute(&self, statement: String) -> Result<Executed> {
+        let (reply, response) = flume::bounded(1);
+        if self
+            .commands
+            .send_async(Command::Execute { statement, reply })
+            .await
+            .is_err()
+        {
+            return Err(worker_stopped());
+        }
+        response
+            .recv_async()
+            .await
+            .unwrap_or_else(|_| Err(worker_stopped()))
+    }
+
+    /// Fetches another page of the open Result Set.
+    pub async fn fetch_more(&self) -> Result<Page> {
+        let (reply, response) = flume::bounded(1);
+        if self
+            .commands
+            .send_async(Command::Fetch { reply })
+            .await
+            .is_err()
+        {
+            return Err(worker_stopped());
+        }
+        response
+            .recv_async()
+            .await
+            .unwrap_or_else(|_| Err(worker_stopped()))
+    }
+
+    /// Breaks the running statement through the cancel handle, not the
+    /// worker's queue, which is blocked while `execute` runs (ADR-0002).
+    pub fn cancel(&self) -> Result<()> {
+        self.cancel.cancel()
+    }
+}
+
+/// The worker loop: owns the connection and the open cursor, one command at
+/// a time.
+fn worker_loop(connection: Box<dyn Connection>, commands: flume::Receiver<Command>) {
+    let mut cursor: Option<Box<dyn Cursor>> = None;
+    // `recv()` returns `Err` when every sender is dropped (disconnect).
+    while let Ok(command) = commands.recv() {
+        match command {
+            Command::Execute { statement, reply } => {
+                // A new statement abandons any previous Result Set.
+                cursor = None;
+                let executed = match connection.execute(&statement) {
+                    Ok(StatementOutcome::Rows { page, cursor: next }) => {
+                        cursor = next;
+                        Ok(Executed::Rows { page })
+                    }
+                    Ok(StatementOutcome::RowCount(count)) => Ok(Executed::RowCount(count)),
+                    Ok(StatementOutcome::Ddl) => Ok(Executed::Ddl),
+                    Err(error) => Err(error),
+                };
+                let _ = reply.send(executed);
+            }
+            Command::Fetch { reply } => {
+                let result = match cursor.as_mut() {
+                    Some(cursor) => cursor.fetch(FETCH_ROWS),
+                    None => Err(DbError::new("", "no result set is open", None)),
+                };
+                // Drop an exhausted cursor so its server-side resources free
+                // up, and an errored one rather than reuse a broken handle.
+                let keep = result.as_ref().is_ok_and(|page| page.more);
+                if !keep {
+                    cursor = None;
+                }
+                let _ = reply.send(result);
+            }
+        }
+    }
+}
+
+fn worker_stopped() -> DbError {
+    DbError::new("", "the session worker stopped", None)
+}
+
 /// The app's current Oracle session, if any.
 #[derive(Default)]
 pub struct Session {
     state: SessionState,
-    connection: Option<SharedConnection>,
+    worker: Option<SessionWorker>,
 }
 
 impl Session {
@@ -57,42 +179,52 @@ impl Session {
         &self.state
     }
 
-    /// The live connection, when connected. Cloning the `Arc` lets a
-    /// background task execute while the UI keeps one to cancel.
-    pub fn connection(&self) -> Option<SharedConnection> {
-        self.connection.clone()
+    /// The session's worker handle, when connected.
+    pub fn worker(&self) -> Option<SessionWorker> {
+        self.worker.clone()
     }
 
     pub fn set_connecting(&mut self, profile: &str, cx: &mut Context<Self>) {
         self.state = SessionState::Connecting(profile.to_string());
-        self.connection = None;
+        self.worker = None;
         cx.notify();
     }
 
+    /// Takes `connection` over and starts its worker thread.
+    ///
+    /// The connection enters the worker as the [`Connection`] seam — the app
+    /// never touches the driver directly (ADR-0001); only the cancel handle
+    /// comes from the concrete type (ADR-0002).
     pub fn set_connected(
         &mut self,
         profile: &str,
         detail: String,
-        connection: SharedConnection,
+        connection: OraConnection,
         cx: &mut Context<Self>,
     ) {
+        let cancel = Arc::from(connection.cancel_handle());
+        let (commands, receiver) = flume::bounded(COMMAND_QUEUE_DEPTH);
+        std::thread::Builder::new()
+            .name("oraurust-session".into())
+            .spawn(move || worker_loop(Box::new(connection), receiver))
+            .expect("spawn the session worker thread");
+        self.worker = Some(SessionWorker { commands, cancel });
         self.state = SessionState::Connected {
             profile: profile.to_string(),
             detail,
         };
-        self.connection = Some(connection);
         cx.notify();
     }
 
     pub fn set_failed(&mut self, message: String, cx: &mut Context<Self>) {
         self.state = SessionState::Failed(message);
-        self.connection = None;
+        self.worker = None;
         cx.notify();
     }
 
     pub fn disconnect(&mut self, cx: &mut Context<Self>) {
         self.state = SessionState::Disconnected;
-        self.connection = None;
+        self.worker = None;
         cx.notify();
     }
 }

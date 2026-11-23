@@ -1,6 +1,59 @@
 //! A canned [`Connection`] for tests: outcomes are scripted per statement.
 
+use std::collections::VecDeque;
+
 use super::*;
+
+/// A scripted outcome, kept in a cloneable form so `execute(&self)` can hand
+/// out a fresh one on every call (a [`Cursor`] itself is not cloneable).
+#[derive(Debug, Clone)]
+enum Scripted {
+    Error(DbError),
+    Rows {
+        columns: Vec<Column>,
+        /// One entry per page; `execute` starts a fresh cursor at the front.
+        pages: Vec<Vec<Vec<Option<String>>>>,
+    },
+    RowCount(u64),
+}
+
+impl Scripted {
+    /// Builds the outcome for one `execute` call.
+    fn outcome(&self) -> Result<StatementOutcome> {
+        match self {
+            Scripted::Error(error) => Err(error.clone()),
+            Scripted::RowCount(count) => Ok(StatementOutcome::RowCount(*count)),
+            Scripted::Rows { columns, pages } => {
+                // Flatten the scripted pages so the cursor applies the same
+                // `ROW_CAP` rule the real one does.
+                let mut rows: VecDeque<Vec<Option<String>>> =
+                    pages.iter().flatten().cloned().collect();
+                // The first page is the size of the first scripted page,
+                // clamped to the cap.
+                let first_len = pages.first().map_or(0, Vec::len).min(ROW_CAP);
+                let first: Vec<Vec<Option<String>>> = rows.drain(..first_len).collect();
+                let fetched = first.len();
+                let more = !rows.is_empty();
+                let cursor = more.then(|| {
+                    Box::new(MockCursor {
+                        columns: columns.clone(),
+                        rows,
+                        fetched,
+                    }) as Box<dyn Cursor>
+                });
+                Ok(StatementOutcome::Rows {
+                    page: Page {
+                        columns: columns.clone(),
+                        rows: first,
+                        fetched,
+                        capped: false,
+                        more,
+                    },
+                    cursor,
+                })            }
+        }
+    }
+}
 
 /// A [`Connection`] that returns scripted outcomes.
 ///
@@ -11,14 +64,14 @@ use super::*;
 ///
 /// DDL/source/schema lookups are keyed by `Object` and default to an
 /// [`DbError`] `ORA-04043`-style "not found" when unscripted.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct MockConnection {
     /// (statement text, outcome) pairs, matched in order. An empty statement
     /// text matches any statement — used by `with_select` for "next SELECT
     /// returns this".
-    scripted: Vec<(String, Result<StatementOutcome>)>,
+    scripted: Vec<(String, Scripted)>,
     /// Fallback for statements with no scripted outcome.
-    fallback: Option<Result<StatementOutcome>>,
+    fallback: Scripted,
     ddl: Vec<(Object, String)>,
     source: Vec<(Object, String)>,
     catalog: Catalog,
@@ -28,7 +81,7 @@ impl Default for MockConnection {
     fn default() -> Self {
         Self {
             scripted: Vec::new(),
-            fallback: Some(Ok(StatementOutcome::RowCount(1))),
+            fallback: Scripted::RowCount(1),
             ddl: Vec::new(),
             source: Vec::new(),
             catalog: Catalog::default(),
@@ -52,7 +105,7 @@ impl MockConnection {
     ) -> Self {
         self.scripted.push((
             statement.to_string(),
-            Err(DbError {
+            Scripted::Error(DbError {
                 code: code.to_string(),
                 message: message.to_string(),
                 position,
@@ -62,35 +115,49 @@ impl MockConnection {
     }
 
     /// Scripts the next statement with no closer scripted match to return a
-    /// Result Set with `columns` and `rows` (empty key = wildcard).
+    /// one-page Result Set with `columns` and `rows` (empty key = wildcard).
     ///
     /// Use [`MockConnection::with_select_for`] to key the outcome to one
     /// statement.
-    pub fn with_select(
-        self,
-        columns: Vec<Column>,
-        rows: Vec<Vec<Option<String>>>,
-    ) -> Self {
+    pub fn with_select(self, columns: Vec<Column>, rows: Vec<Vec<Option<String>>>) -> Self {
         self.with_select_for("", columns, rows)
     }
 
-    /// Scripts `statement` to return a Result Set with `columns` and `rows`.
+    /// Scripts `statement` to return a one-page Result Set with `columns` and
+    /// `rows`.
+    ///
+    /// To script a paged SELECT, use [`MockConnection::with_pages_for`].
     pub fn with_select_for(
-        mut self,
+        self,
         statement: &str,
         columns: Vec<Column>,
         rows: Vec<Vec<Option<String>>>,
     ) -> Self {
+        self.with_pages_for(statement, columns, vec![rows])
+    }
+
+    /// Scripts `statement` to return a paged Result Set: `pages` are handed
+    /// out one per `execute`/`Cursor::fetch` call, and a cursor is present
+    /// only while pages remain.
+    ///
+    /// Each page's `fetched` is set from the total rows handed out so far, so
+    /// the mock behaves like a real cursor.
+    pub fn with_pages_for(
+        mut self,
+        statement: &str,
+        columns: Vec<Column>,
+        pages: Vec<Vec<Vec<Option<String>>>>,
+    ) -> Self {
         self.scripted.push((
             statement.to_string(),
-            Ok(StatementOutcome::Rows(ResultSet { columns, rows })),
+            Scripted::Rows { columns, pages },
         ));
         self
     }
 
     /// Scripts the fallback outcome for statements with no scripted match.
     pub fn with_row_count(mut self, count: u64) -> Self {
-        self.fallback = Some(Ok(StatementOutcome::RowCount(count)));
+        self.fallback = Scripted::RowCount(count);
         self
     }
 
@@ -117,17 +184,14 @@ impl Connection for MockConnection {
     fn execute(&self, statement: &str) -> Result<StatementOutcome> {
         // Exact scripted matches win over the wildcard, which wins over the
         // fallback.
-        for (text, outcome) in &self.scripted {
-            if text == statement {
-                return outcome.clone();
-            }
-        }
-        if let Some((_, outcome)) = self.scripted.iter().find(|(text, _)| text.is_empty()) {
-            return outcome.clone();
-        }
-        self.fallback
-            .clone()
-            .expect("MockConnection always has a fallback")
+        let scripted = self
+            .scripted
+            .iter()
+            .find(|(text, _)| text == statement)
+            .or_else(|| self.scripted.iter().find(|(text, _)| text.is_empty()))
+            .map(|(_, scripted)| scripted)
+            .unwrap_or(&self.fallback);
+        scripted.outcome()
     }
 
     fn describe_schema(&self) -> Result<Catalog> {
@@ -148,6 +212,42 @@ impl Connection for MockConnection {
             .find(|(o, _)| o == object)
             .map(|(_, src)| src.clone())
             .ok_or_else(|| not_found(object))
+    }
+}
+
+/// The mock's cancel handle: cancelling succeeds and does nothing.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MockCancel;
+
+impl CancelHandle for MockCancel {
+    fn cancel(&self) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// A scripted paged cursor: hands out its remaining pages one call each.
+struct MockCursor {
+    columns: Vec<Column>,
+    /// Remaining rows, flattened across the scripted pages.
+    rows: VecDeque<Vec<Option<String>>>,
+    /// Rows handed out before this cursor was created.
+    fetched: usize,
+}
+
+impl Cursor for MockCursor {
+    fn fetch(&mut self, max_rows: usize) -> Result<Page> {
+        // Same rules as the real cursor: never past `max_rows` or `ROW_CAP`.
+        let want = max_rows.min(ROW_CAP.saturating_sub(self.fetched));
+        let rows: Vec<Vec<Option<String>>> = self.rows.drain(..want.min(self.rows.len())).collect();
+        self.fetched += rows.len();
+        let capped = !self.rows.is_empty() && self.fetched >= ROW_CAP;
+        Ok(Page {
+            columns: self.columns.clone(),
+            rows,
+            fetched: self.fetched,
+            capped,
+            more: !self.rows.is_empty() && !capped,
+        })
     }
 }
 

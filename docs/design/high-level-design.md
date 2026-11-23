@@ -59,7 +59,7 @@ enum Event   { Connected, Rows{id, cols, page, done}, RowCount{id, n}, Ddl{id},
 
 Session states: `Disconnected → Connecting → Idle(clean|dirty) → Executing → Lost`.
 
-**Seam note.** The spec fixes `Connection` at four methods (`execute`, `describe_schema`, `fetch_ddl`, `fetch_source`) and names it as a tested boundary. Commit/rollback can go through `execute("COMMIT")` / `execute("ROLLBACK")` (ticket #7), with the dirty flag derived from outcomes (DML row count → dirty; DDL, commit, rollback → clean). Cancel cannot, because `execute` is blocked: it needs a separate `CancelHandle` that calls `break_execution`. Paged fetch changes `StatementOutcome::Rows` from a full `ResultSet` to a first page plus a cursor. Record these changes in the spec or an ADR.
+**Seam note.** The spec fixes `Connection` at four methods (`execute`, `describe_schema`, `fetch_ddl`, `fetch_source`) and names it as a tested boundary. Commit/rollback can go through `execute("COMMIT")` / `execute("ROLLBACK")` (ticket #7), with the dirty flag derived from outcomes (DML row count → dirty; DDL, commit, rollback → clean). Cancel cannot, because `execute` is blocked: it needs a separate `CancelHandle` that calls `break_execution`. Paged fetch changes `StatementOutcome::Rows` from a full `ResultSet` to a first page plus a cursor. **Decided in [ADR-0002](../adr/0002-session-worker-cancel-paged-fetch.md)** (issue #6 shipped): four-method seam, separate `CancelHandle` obtained from the concrete driver, a `Session` worker thread, and 500-row pages capped at 10,000 rows.
 
 Profile target (new, in core):
 
@@ -101,8 +101,8 @@ enum Target { EasyConnect{host, port, service}, TnsAlias(String) }
 |---|---|---|
 | Editor / Connection panels | exists | author scripts; manage profiles |
 | Schema Browser + DDL Viewer, Result/Data Grid | planned (#8, #6) | explore and view data |
-| Session (becomes SessionManager) | **new** | one entity owns the worker and state instead of `ConnectionPanel`; becomes a manager only when multi-session lands |
-| DB Worker thread (one per session) | **new** | serialises OCI calls, holds the cancel handle (ADR-0001) |
+| Session (becomes SessionManager) | exists (#6) | one entity owns the worker and state instead of `ConnectionPanel`; becomes a manager only when multi-session lands |
+| DB Worker thread (one per session) | exists (#6) | serialises OCI calls, holds the open cursor; cancel via a separate handle (ADR-0002) |
 | `Connection` trait | exists | the seam; `OraConnection` (prod), `MockConnection` (tests) |
 | `ScriptSplitter` | exists | script text → statements |
 | Catalog Cache | planned | completion and Schema Browser, per session |
@@ -146,7 +146,7 @@ Windows-only consequence: the base64 password fallback in `ProfileStore` stays o
 
 ## 8. Scale evolution
 
-- **Now:** unbounded result materialisation. Fix with paged fetch before the Result Grid ships.
+- **Now:** paged fetch shipped with the Result Grid (issue #6, ADR-0002): 500-row pages, 10,000-row cap.
 - **10×:** 100k-object catalogs → load columns lazily per table, cache with TTL, invalidate on DDL.
 - **Signals to watch:** result memory, frame time, catalog load time, queued statements per session.
 

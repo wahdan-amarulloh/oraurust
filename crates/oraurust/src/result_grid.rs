@@ -14,7 +14,7 @@ use gpui_kit::component::table::{Column as TableColumn, DataTable, TableDelegate
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use oraurust_core::ResultSet;
+use oraurust_core::{ResultSet, ROW_CAP};
 
 use crate::runner::{QueryRunner, RunStatus};
 
@@ -134,7 +134,7 @@ impl ResultGridPanel {
         }
         self.table_generation = generation;
         self.table = match self.runner.read(cx).status() {
-            RunStatus::Rows(result) => {
+            RunStatus::Rows { result, .. } => {
                 let delegate = ResultGridDelegate::from_result_set(result.clone());
                 Some(cx.new(|cx| TableState::new(delegate, window, cx).cell_selectable(false)))
             }
@@ -153,7 +153,7 @@ impl Focusable for ResultGridPanel {
 impl Render for ResultGridPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let status = self.runner.read(cx).status().clone();
-        let running = status.is_running();
+        let busy = self.runner.read(cx).is_busy();
 
         let (line, color) = match &status {
             RunStatus::Idle => (
@@ -161,14 +161,28 @@ impl Render for ResultGridPanel {
                 cx.theme().muted_foreground,
             ),
             RunStatus::Running => ("Running...".to_string(), cx.theme().muted_foreground),
-            RunStatus::Rows(result) => (
-                format!(
-                    "{} row{} fetched",
-                    result.rows.len(),
-                    if result.rows.len() == 1 { "" } else { "s" }
-                ),
-                cx.theme().muted_foreground,
-            ),
+            RunStatus::Rows {
+                result,
+                more,
+                capped,
+            } => {
+                let fetched = result.rows.len();
+                let suffix = if *capped {
+                    format!(" (row cap {ROW_CAP} reached; more rows not fetched)")
+                } else if *more {
+                    " (fetching more…)".to_string()
+                } else {
+                    String::new()
+                };
+                (
+                    format!(
+                        "{} row{} fetched{suffix}",
+                        fetched,
+                        if fetched == 1 { "" } else { "s" }
+                    ),
+                    cx.theme().muted_foreground,
+                )
+            }
             RunStatus::Dml(affected) => (
                 format!(
                     "{affected} row{} affected (uncommitted)",
@@ -216,7 +230,7 @@ impl Render for ResultGridPanel {
                     .child(
                         Button::new("cancel-statement")
                             .label("Cancel")
-                            .when(!running, |button| button.disabled(true))
+                            .when(!busy, |button| button.disabled(true))
                             .on_click(cx.listener(|this, _, _window, cx| {
                                 this.runner.update(cx, |runner, cx| runner.cancel(cx));
                             })),

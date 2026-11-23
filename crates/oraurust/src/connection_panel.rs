@@ -19,7 +19,7 @@ use oraurust_core::instant_client::{ClientStatus, check, remediation};
 use oraurust_core::{Profile, ProfileStore};
 
 use crate::oracle_conn::OraConnection;
-use crate::session::{Session, SessionState, SharedConnection};
+use crate::session::{Session, SessionState};
 
 /// Where profiles are persisted: `%APPDATA%\oraurust\profiles.json`.
 fn default_store() -> ProfileStore {
@@ -229,7 +229,6 @@ impl ConnectionPanel {
                     Ok((connection, profile)) => {
                         let detail =
                             format!("{}@{}", profile.username, profile.connect_string());
-                        let connection: SharedConnection = std::sync::Arc::new(connection);
                         this.session.update(cx, |session, cx| {
                             session.set_connected(&profile.name, detail, connection, cx)
                         });

@@ -37,4 +37,7 @@ The in-memory cache of Schema Browser metadata used for schema-aware completion.
 Identifier suggestions (tables, columns, keywords) built from the Catalog — there is no external PL/SQL language server; this is built in-app.
 
 ## Connection
-A named, saved profile (host, port, service/SID, credentials) plus the live session it opens. Requires Oracle Instant Client on the machine.
+A named, saved **Profile** (host, port, service/SID, credentials). Requires Oracle Instant Client on the machine. The live side it opens is the **Session** (below).
+
+## Session
+The live connection to the database, opened from a Profile. `Session` owns one worker thread that serialises OCI calls and holds any open Result Set cursor; the UI never calls the driver directly (ADR-0002).

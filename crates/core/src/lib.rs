@@ -12,7 +12,8 @@ pub mod instant_client;
 pub mod script;
 
 pub use connection::{
-    Catalog, Column, Connection, DbError, MockConnection, Object, ObjectKind, Profile,
-    ProfileStore, Result, ResultSet, StatementOutcome,
+    CancelHandle, Catalog, Column, Connection, Cursor, DbError, MockCancel, MockConnection,
+    Object, ObjectKind, Page, Profile, ProfileStore, Result, ResultSet, StatementOutcome,
+    FETCH_ARRAY_SIZE, FETCH_ROWS, ROW_CAP,
 };
 pub use script::{Statement, split, statement_at};

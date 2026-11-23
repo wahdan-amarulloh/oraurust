@@ -4,9 +4,10 @@ Work toward an Oracle SQL/PL/SQL client built in Rust (see GitHub issue #1 for t
 
 ## Contents
 
-- `crates/oraurust/` — the application (cargo workspace root at the repo root). Currently the app shell (issue #3), Connection profiles (issue #5), and Ctrl+Enter execution into a Result Grid (issue #6): a native GPUI window with a dock layout — PL/SQL editor pane in the center (vendored `njank/tree-sitter-plsql` grammar), Connection panel on the right, Schema Browser placeholder on the left, and the Result Grid at the bottom. Run with `cargo run` from the repo root.
+- `crates/oraurust/` — the application (cargo workspace root at the repo root). Currently the app shell (issue #3), Connection profiles (issue #5), and Ctrl+Enter execution into a Result Grid (issue #6): a native GPUI window with a dock layout — PL/SQL editor pane in the center (vendored `njank/tree-sitter-plsql` grammar), Connection panel on the right, Schema Browser placeholder on the left, and the Result Grid at the bottom. A `Session` owns a worker thread that serialises OCI calls; a SELECT is fetched in 500-row pages up to a 10,000-row cap, and a Cancel control breaks the running statement (ADR-0002). Run with `cargo run` from the repo root.
 - `spikes/gpui-kit-spike/` — throwaway spike validating gpui-kit on Windows: a dockable workspace with a PL/SQL-highlighted editor and a 10,000-row virtualized table. Excluded from the workspace; see its [README](spikes/gpui-kit-spike/README.md).
 - `docs/` — project docs, including `docs/adr/` and agent guides under `docs/agents/`.
+- `docs/design/high-level-design.md` — high-level design (session/worker model, seams, failure handling)
 - `scratch/` — scratch space; not part of the project.
 
 ## Build prerequisites
@@ -21,7 +22,7 @@ All commands are run from the repo root, where the workspace lives. The workspac
 
 - `cargo run` — builds and launches the app. This opens the native window.
 - `cargo build` — builds the workspace without running anything.
-- `cargo test` — runs the workspace tests. The logic core `crates/core/` (issues #4, #6) carries the tested seams `ScriptSplitter`, `statement_at` (statement under the cursor), and `Connection` (mocked, with background `execute`/`cancel`); `cargo test -p oraurust-core` runs them alone. `DataGridMutator` arrives in a later ticket.
+- `cargo test` — runs the workspace tests. The logic core `crates/core/` (issues #4, #6) carries the tested seams `ScriptSplitter`, `statement_at` (statement under the cursor), and `Connection` (mocked, with paged SELECTs and a separate `CancelHandle`); `cargo test -p oraurust-core` runs them alone. `DataGridMutator` arrives in a later ticket.
 
 Closing the window exits the process cleanly.
 

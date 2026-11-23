@@ -2,14 +2,20 @@
 //! Client, per ADR-0001. Built from a [`Profile`]'s Easy Connect string;
 //! runs on the background thread (GPUI never blocks on Oracle).
 
+use std::sync::Arc;
+
 use oraurust_core::{
-    Catalog, Column, Connection, DbError, Object, ObjectKind, Profile, Result, ResultSet,
-    StatementOutcome,
+    CancelHandle, Catalog, Column, Connection, Cursor, DbError, Object, ObjectKind, Page, Profile,
+    Result, StatementOutcome, FETCH_ARRAY_SIZE, FETCH_ROWS, ROW_CAP,
 };
 
 /// A live Oracle session behind the [`Connection`] seam.
+///
+/// The session is `Arc`-shared so [`OraConnection::cancel_handle`] can break a
+/// running statement from another thread; `oracle::Connection` is `Send +
+/// Sync` (ADR-0002).
 pub struct OraConnection {
-    session: oracle::Connection,
+    session: Arc<oracle::Connection>,
 }
 
 impl OraConnection {
@@ -30,8 +36,32 @@ impl OraConnection {
         connect_string: impl AsRef<str>,
     ) -> Result<Self> {
         oracle::Connection::connect(&profile.username, &profile.password, connect_string)
-            .map(|session| Self { session })
+            .map(|session| Self {
+                session: Arc::new(session),
+            })
             .map_err(|e| map_error(e, None))
+    }
+
+    /// A handle that breaks the running statement (`break_execution`), over
+    /// the same session (ADR-0002).
+    pub fn cancel_handle(&self) -> Box<dyn CancelHandle> {
+        Box::new(OraCancel {
+            session: self.session.clone(),
+        })
+    }
+}
+
+/// [`CancelHandle`] for [`OraConnection`].
+struct OraCancel {
+    session: Arc<oracle::Connection>,
+}
+
+impl CancelHandle for OraCancel {
+    fn cancel(&self) -> Result<()> {
+        // `break_execution` is an OCI call: the caller runs it off the UI
+        // thread. The server raises ORA-01013 on the interrupted fetch, which
+        // surfaces as the run's error.
+        self.session.break_execution().map_err(|e| map_error(e, None))
     }
 }
 
@@ -77,31 +107,45 @@ impl Connection for OraConnection {
         let mut stmt = self
             .session
             .statement(statement)
+            .fetch_array_size(FETCH_ARRAY_SIZE)
+            // One extra row in the prefetch tells us whether more rows remain
+            // without a round trip per page boundary.
+            .prefetch_rows(FETCH_ARRAY_SIZE + 1)
             .build()
             .map_err(|e| map_error(e, None))?;
-        // The statement type decides the outcome shape: SELECT → rows, DDL →
-        // implicit commit, DML → affected row count in the open transaction.
+        // The statement type decides the outcome shape: SELECT → a first page
+        // plus a cursor, DDL → implicit commit, DML → affected row count in
+        // the open transaction.
         if stmt.is_query() {
-            let mut result = stmt.query(&[]).map_err(|e| map_error(e, None))?;
-            let columns: Vec<Column> = result
-                .column_info()
-                .iter()
-                .map(|c| Column {
-                    name: c.name().to_string(),
-                    type_name: c.oracle_type().to_string(),
-                })
-                .collect();
-            let mut rows: Vec<Vec<Option<String>>> = Vec::new();
-            for row in result.by_ref() {
-                let row = row.map_err(|e| map_error(e, None))?;
-                // rust-oracle column indexes are 0-based; a 1-based loop asked
-                // for one past the end ("invalid column index 1 (zero-based)").
-                let values = (0..columns.len())
-                    .map(|ix| row.get::<usize, Option<String>>(ix).map_err(|e| map_error(e, None)))
-                    .collect::<Result<Vec<Option<String>>>>()?;
-                rows.push(values);
-            }
-            Ok(StatementOutcome::Rows(ResultSet { columns, rows }))
+            // `into_result_set` takes ownership of the statement, so the
+            // cursor can outlive this call on the worker thread.
+            let mut result = stmt
+                .into_result_set::<oracle::Row>(&[])
+                .map_err(|e| map_error(e, None))?;
+            let columns = columns_of(&result);
+            let mut pending = None;
+            let (rows, more) =
+                read_rows(&mut result, columns.len(), FETCH_ROWS, &mut pending)?;
+            let fetched = rows.len();
+            let cursor = more.then(|| {
+                Box::new(OraCursor {
+                    result: Some(result),
+                    columns: columns.clone(),
+                    fetched,
+                    exhausted: false,
+                    pending,
+                }) as Box<dyn Cursor>
+            });
+            Ok(StatementOutcome::Rows {
+                page: Page {
+                    columns,
+                    rows,
+                    fetched,
+                    capped: false,
+                    more,
+                },
+                cursor,
+            })
         } else {
             stmt.execute(&[]).map_err(|e| map_error(e, None))?;
             if stmt.is_ddl() {
@@ -111,13 +155,6 @@ impl Connection for OraConnection {
                 Ok(StatementOutcome::RowCount(affected))
             }
         }
-    }
-
-    fn cancel(&self) -> Result<()> {
-        // `break_execution` is an OCI call: it must also run off the UI
-        // thread (the caller does that). The server raises ORA-01013 on the
-        // interrupted fetch, which surfaces as the run's error.
-        self.session.break_execution().map_err(|e| map_error(e, None))
     }
 
     fn describe_schema(&self) -> Result<Catalog> {
@@ -171,6 +208,112 @@ impl Connection for OraConnection {
         }
         Ok(source)
     }
+}
+
+/// Paged continuation of a SELECT (issue #6, ADR-0002).
+///
+/// Holds the `oracle` Result Set, which owns its statement, and the running
+/// totals the grid shows. The row cap and page size come from core.
+struct OraCursor {
+    result: Option<oracle::ResultSet<'static, oracle::Row>>,
+    columns: Vec<Column>,
+    /// Rows fetched across every page so far.
+    fetched: usize,
+    /// Set once the Result Set has no more rows (or the cap was hit).
+    exhausted: bool,
+    /// A row read one past a page's limit, kept for the next page so the
+    /// exact "more rows" check never loses a row.
+    pending: Option<Vec<Option<String>>>,
+}
+
+impl Cursor for OraCursor {
+    fn fetch(&mut self, max_rows: usize) -> Result<Page> {
+        if self.exhausted {
+            return Ok(self.page(Vec::new(), false));
+        }
+        let Some(result) = self.result.as_mut() else {
+            return Ok(self.page(Vec::new(), false));
+        };
+        // Never fetch past the cap; the page stops at whichever comes first.
+        let remaining = ROW_CAP.saturating_sub(self.fetched);
+        let want = max_rows.min(FETCH_ROWS).min(remaining);
+        let (rows, more) = read_rows(result, self.columns.len(), want, &mut self.pending)?;
+        let capped = more && rows.len() + self.fetched >= ROW_CAP;
+        self.fetched += rows.len();
+        // End of data or the cap releases the server-side cursor.
+        self.exhausted = !more || capped;
+        if self.exhausted {
+            self.result = None;
+        }
+        Ok(self.page(rows, capped))
+    }
+}
+
+impl OraCursor {
+    fn page(&self, rows: Vec<Vec<Option<String>>>, capped: bool) -> Page {
+        Page {
+            columns: self.columns.clone(),
+            rows,
+            fetched: self.fetched,
+            capped,
+            more: !self.exhausted,
+        }
+    }
+}
+
+/// The Result Set's column metadata, name and Oracle type (issue #6's grid
+/// header).
+fn columns_of(result: &oracle::ResultSet<'static, oracle::Row>) -> Vec<Column> {
+    result
+        .column_info()
+        .iter()
+        .map(|c| Column {
+            name: c.name().to_string(),
+            type_name: c.oracle_type().to_string(),
+        })
+        .collect()
+}
+
+/// Reads up to `limit` rows as strings and reports whether more remain.
+///
+/// Reads one row past `limit` to learn `more` exactly, stashing it in
+/// `pending` so the next page starts with it — otherwise a peek would lose a
+/// row. Every value is `Option<String>`; `NULL` stays `None`. Column indexes
+/// are 0-based (rust-oracle's `Row::get`).
+fn read_rows(
+    result: &mut oracle::ResultSet<'static, oracle::Row>,
+    columns: usize,
+    limit: usize,
+    pending: &mut Option<Vec<Option<String>>>,
+) -> Result<(Vec<Vec<Option<String>>>, bool)> {
+    let mut rows = Vec::with_capacity(limit.min(64));
+    if let Some(row) = pending.take() {
+        rows.push(row);
+    }
+    while rows.len() < limit {
+        match result.next() {
+            Some(row) => {
+                let row = row.map_err(|e| map_error(e, None))?;
+                rows.push(read_row(&row, columns)?);
+            }
+            None => return Ok((rows, false)),
+        }
+    }
+    // Reached the limit: one more row decides `more`, and is kept for later.
+    match result.next() {
+        Some(row) => {
+            let row = row.map_err(|e| map_error(e, None))?;
+            *pending = Some(read_row(&row, columns)?);
+            Ok((rows, true))
+        }
+        None => Ok((rows, false)),
+    }
+}
+
+fn read_row(row: &oracle::Row, columns: usize) -> Result<Vec<Option<String>>> {
+    (0..columns)
+        .map(|ix| row.get::<usize, Option<String>>(ix).map_err(|e| map_error(e, None)))
+        .collect()
 }
 
 fn not_found(object: &Object) -> DbError {
@@ -252,11 +395,11 @@ mod integration {
         let Some(conn) = connection() else { return skip() };
 
         match conn.execute("select 1 from dual").expect("select 1 from dual") {
-            StatementOutcome::Rows(result) => {
-                assert_eq!(result.columns.len(), 1);
-                assert_eq!(result.rows.len(), 1);
-                assert_eq!(result.rows[0].len(), 1, "one value per column");
-                assert_eq!(result.rows[0][0].as_deref(), Some("1"));
+            StatementOutcome::Rows { page, .. } => {
+                assert_eq!(page.columns.len(), 1);
+                assert_eq!(page.rows.len(), 1);
+                assert_eq!(page.rows[0].len(), 1, "one value per column");
+                assert_eq!(page.rows[0][0].as_deref(), Some("1"));
             }
             other => panic!("expected Rows, got {other:?}"),
         }
@@ -270,13 +413,13 @@ mod integration {
             .execute("select 1 as a, 'x' as b, null as c from dual")
             .expect("three-column select");
         match outcome {
-            StatementOutcome::Rows(result) => {
-                assert_eq!(result.columns.len(), 3);
-                assert_eq!(result.rows.len(), 1);
-                assert_eq!(result.rows[0].len(), 3);
-                assert_eq!(result.rows[0][0].as_deref(), Some("1"));
-                assert_eq!(result.rows[0][1].as_deref(), Some("x"));
-                assert_eq!(result.rows[0][2], None, "NULL stays None");
+            StatementOutcome::Rows { page, .. } => {
+                assert_eq!(page.columns.len(), 3);
+                assert_eq!(page.rows.len(), 1);
+                assert_eq!(page.rows[0].len(), 3);
+                assert_eq!(page.rows[0][0].as_deref(), Some("1"));
+                assert_eq!(page.rows[0][1].as_deref(), Some("x"));
+                assert_eq!(page.rows[0][2], None, "NULL stays None");
             }
             other => panic!("expected Rows, got {other:?}"),
         }
@@ -309,6 +452,33 @@ mod integration {
             error.position.is_some_and(|position| position >= 1),
             "Oracle reports a 1-based position: {error}"
         );
+    }
+
+    #[test]
+    fn a_select_larger_than_one_page_needs_the_cursor() {
+        let Some(conn) = connection() else { return skip() };
+
+        // CONNECT BY LEVEL generates 1200 rows, past one 500-row page; no
+        // table is touched and nothing is committed.
+        let sql = "select level as n from dual connect by level <= 1200";
+        let (first, mut cursor) = match conn.execute(sql).expect("paged select") {
+            StatementOutcome::Rows { page, cursor } => (page, cursor.expect("more rows remain")),
+            other => panic!("expected Rows, got {other:?}"),
+        };
+        assert_eq!(first.rows.len(), FETCH_ROWS);
+        assert!(first.more);
+        assert_eq!(first.fetched, FETCH_ROWS);
+
+        let second = cursor.fetch(FETCH_ROWS).expect("second page");
+        assert_eq!(second.rows.len(), FETCH_ROWS);
+        assert_eq!(second.fetched, 2 * FETCH_ROWS);
+        assert!(second.more, "1200 rows need a third page");
+
+        let third = cursor.fetch(FETCH_ROWS).expect("third page");
+        assert_eq!(third.rows.len(), 1200 - 2 * FETCH_ROWS);
+        assert!(!third.more, "the Result Set ends at 1200 rows");
+        assert_eq!(third.fetched, 1200);
+        assert!(!third.capped);
     }
 
     #[test]

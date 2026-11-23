@@ -56,6 +56,40 @@ pub struct DbError {
     pub position: Option<usize>,
 }
 
+impl DbError {
+    /// Builds an error, removing a leading copy of `code` from `message`.
+    ///
+    /// ODPI-C messages already carry their own `ORA-nnnnn: ` prefix, so
+    /// storing both verbatim would double it in [`Display`](std::fmt::Display).
+    pub fn new(
+        code: impl Into<String>,
+        message: impl Into<String>,
+        position: Option<usize>,
+    ) -> Self {
+        let code = code.into();
+        let message = message.into();
+        let message = strip_code_prefix(&message, &code)
+            .map(str::to_string)
+            .unwrap_or(message);
+        Self {
+            code,
+            message,
+            position,
+        }
+    }
+}
+
+/// `message` without a leading `<code>: ` (and without rust-oracle's
+/// `"OCI Error: "` prefix), when it duplicates the code.
+fn strip_code_prefix<'a>(message: &'a str, code: &str) -> Option<&'a str> {
+    if code.is_empty() {
+        return None;
+    }
+    let message = message.strip_prefix("OCI Error: ").unwrap_or(message);
+    let rest = message.strip_prefix(code)?;
+    rest.strip_prefix(": ")
+}
+
 impl std::fmt::Display for DbError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.code.is_empty() {

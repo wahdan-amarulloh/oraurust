@@ -21,8 +21,9 @@ The logic behind the app, proven entirely by tests with no UI and no database:
   `fetch_source` — with a scripted `MockConnection` returning canned outcomes
   (rows, row counts, `ORA-` errors). `execute` and `cancel` take `&self` so a
   statement runs on a background thread while the UI keeps the connection to
-  cancel it. `DbError` implements `Display` (`ORA-01756: message (at position N)`),
-  so Oracle errors surface readably.
+  cancel it. `DbError::new` strips a code the Oracle message already repeats
+  ("ORA-04043: object ..."), and `DbError` implements `Display`
+  (`ORA-01756: message (at position N)`), so Oracle errors surface readably.
 - **Connection profiles** (`src/connection/profile.rs`, `store.rs`, issue #5):
   `Profile` (name, host, port, service/SID, credentials) with Easy Connect
   string building (`//host:port/service`), and `ProfileStore`, a JSON file

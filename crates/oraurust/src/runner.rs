@@ -103,6 +103,10 @@ impl QueryRunner {
     }
 
     /// Asks Oracle to break the running statement (issue #6's cancel control).
+    ///
+    /// `cancel_requested` is set only once the break succeeds: a failed break
+    /// must not block a retry, or a long query would keep running with no way
+    /// to stop it.
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
         let Some(connection) = self.running.clone() else {
             return;
@@ -110,9 +114,16 @@ impl QueryRunner {
         if self.cancel_requested {
             return;
         }
-        self.cancel_requested = true;
-        cx.background_spawn(async move {
-            let _ = connection.cancel();
+        cx.spawn(async move |this, cx| {
+            // `break_execution` is an OCI call: it runs off the UI thread too.
+            let broke = cx.background_spawn(async move { connection.cancel() }).await;
+            this.update(cx, |this, cx| {
+                if broke.is_ok() {
+                    this.cancel_requested = true;
+                    cx.notify();
+                }
+            })
+            .ok();
         })
         .detach();
     }

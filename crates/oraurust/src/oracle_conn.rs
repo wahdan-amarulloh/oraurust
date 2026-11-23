@@ -34,27 +34,29 @@ fn map_error(error: oracle::Error, position: Option<usize>) -> DbError {
     // Instant Client) carry no db_error(), so the DPI code must be read off
     // the error in that branch too — otherwise classify_error never fires
     // and the user loses the remediation text.
-    let (code, message) = match error.db_error() {
-        Some(dberr) => {
-            let code = match error.oci_code() {
-                Some(oci) => format!("ORA-{oci:05}"),
-                None => error
-                    .dpi_code()
-                    .map(|dpi| format!("DPI-{dpi}"))
-                    .unwrap_or_default(),
-            };
-            (code, dberr.message().to_string())
-        }
-        None => match error.dpi_code() {
-            Some(dpi) => (format!("DPI-{dpi}"), error.to_string()),
-            None => (String::new(), error.to_string()),
-        },
+    let Some(dberr) = error.db_error() else {
+        let db_error = match error.dpi_code() {
+            Some(dpi) => DbError::new(format!("DPI-{dpi}"), error.to_string(), None),
+            None => DbError::new("", error.to_string(), None),
+        };
+        return map_classified(db_error);
     };
-    let db_error = DbError {
-        code,
-        message,
-        position,
+    let code = match error.oci_code() {
+        Some(oci) => format!("ORA-{oci:05}"),
+        None => error
+            .dpi_code()
+            .map(|dpi| format!("DPI-{dpi}"))
+            .unwrap_or_default(),
     };
+    // `offset()` is ODPI-C's 0-based parse-error offset (0 when it has none),
+    // so it becomes the 1-based position the UI reports (issue #6).
+    let position = position.or_else(|| Some(dberr.offset() as usize).filter(|&p| p > 0));
+    map_classified(DbError::new(code, dberr.message(), position))
+}
+
+/// Turns errors about the Instant Client itself into the actionable text the
+/// startup check produces; leaves every other error alone.
+fn map_classified(db_error: DbError) -> DbError {
     match oraurust_core::instant_client::classify_error(db_error.clone()) {
         Some(actionable) => actionable,
         None => db_error,
@@ -160,11 +162,11 @@ impl Connection for OraConnection {
 }
 
 fn not_found(object: &Object) -> DbError {
-    DbError {
-        code: "ORA-04043".into(),
-        message: format!("object {} does not exist", object.name),
-        position: None,
-    }
+    DbError::new(
+        "ORA-04043",
+        format!("object {} does not exist", object.name),
+        None,
+    )
 }
 
 /// Dictionary label for each [`ObjectKind`] — the value `ALL_OBJECTS.object_type`,
